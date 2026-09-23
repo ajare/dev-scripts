@@ -317,7 +317,7 @@ DRY_RUN_QUERY='query($q: String!) {
         url
         labels(first: 20) { nodes { name } }
         assignees(first: 10) { nodes { login } }
-        blockedBy(first: 50) { nodes { number } }
+        blockedBy(first: 50) { nodes { number state } }
       }
     }
   }
@@ -377,7 +377,7 @@ run_dry_run() {
         node_of[$n]=$(jq -c '{number, title, url,
             labels: (.labels.nodes // []),
             assignees: (.assignees.nodes // [])}' <<<"$node")
-        blockers_of[$n]=$(jq -r '[.blockedBy.nodes[].number] | map(tostring) | join(" ")' <<<"$node")
+        blockers_of[$n]=$(jq -r '[.blockedBy.nodes[] | select(.state == "OPEN") | .number] | map(tostring) | join(" ")' <<<"$node")
     done < <(jq -c '.data.search.nodes[]' <<<"$data")
 
     echo "Dry run - $agent, filter: $search_query"
