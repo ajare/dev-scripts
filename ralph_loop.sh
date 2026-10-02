@@ -466,7 +466,14 @@ $(jq -r .url <<<"$issue")
 
 You are running non-interactively. Work autonomously through implementation; do not stop at a plan and do not ask the user questions. Read and follow the repository instructions and domain documentation. Inspect the current worktree first because this may be a retry after a provider failure.
 
-Only implement this ticket, not its parent or blocked follow-up tickets. Use the ticket's acceptance criteria as the contract. Run focused tests while developing, then the relevant builds, formatting checks, and tests before completion. Preserve unrelated and pre-existing untracked files.
+Only implement this ticket, not its parent or blocked follow-up tickets. Use the ticket's acceptance criteria as the contract. Preserve unrelated and pre-existing untracked files.
+
+Use staged validation:
+1. Inner development loop: incrementally build only the changed targets and required dependencies; run the specific new, affected, or failing checks. Do not routinely run whole-project builds or full regression suites after every edit.
+2. Feature milestones: once a coherent implementation slice works, build and test the affected modules and relevant integration/contract coverage. Broaden validation when shared code or cross-module dependencies warrant it.
+3. Before completion: perform the repository-required full validation matrix on the final source state, including relevant builds, formatting checks, and tests, and Debug/Release where required. Aim for one successful final validation pass per required configuration, not repeated broad runs with unchanged inputs.
+
+Repository instructions and ticket acceptance criteria take precedence; staging must not omit required coverage. Use the repository's supported configurations, commands, and validation scripts; do not impose CMake/CTest or Debug/Release on repositories that do not require them. Reuse compatible build directories and incremental outputs; do not clean or reconfigure unnecessarily. After a validation failure, use focused checks for the repair loop before returning to the required final validation. Validation evidence must match the final source state: if further edits affect validated code or tests, invalidate and rerun the relevant coverage; do not treat an earlier pass as final verification.
 
 Ensure that all tests are headless and there are no dialog boxes or anything that may block non-interactive automation.
 

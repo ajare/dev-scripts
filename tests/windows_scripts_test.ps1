@@ -18,6 +18,13 @@ function Assert($Condition, [string] $Message) {
 function Set-Fixture($Fixture) {
     [IO.File]::WriteAllText((Join-Path $temp 'fixture.json'), ($Fixture | ConvertTo-Json -Depth 50), $utf8)
     foreach ($name in @('calls.jsonl', 'agent-count', 'prompt.txt')) { Remove-Item -LiteralPath (Join-Path $temp $name) -ErrorAction SilentlyContinue }
+    Get-ChildItem -LiteralPath $temp -Filter 'prompt-*.txt' | Remove-Item
+}
+function Assert-StagedValidation([string] $Prompt) {
+    Assert ($Prompt -match '1\. Inner development loop: incrementally build only the changed targets and required dependencies' -and $Prompt -match 'specific new, affected, or failing checks' -and $Prompt -match 'Do not routinely run whole-project builds or full regression suites after every edit') 'focused inner development loop'
+    Assert ($Prompt -match '2\. Feature milestones:' -and $Prompt -match 'affected modules and relevant integration/contract coverage' -and $Prompt -match 'Broaden validation when shared code or cross-module dependencies warrant it') 'milestone validation'
+    Assert ($Prompt -match '3\. Before completion: perform the repository-required full validation matrix on the final source state' -and $Prompt -match 'one successful final validation pass per required configuration') 'required final validation'
+    Assert ($Prompt -match 'Validation evidence must match the final source state:' -and $Prompt -match 'invalidate and rerun the relevant coverage; do not treat an earlier pass as final verification') 'final-source-state evidence'
 }
 function Run-Script([string] $Name, [string[]] $Tokens) {
     Invoke-Native $engine (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $root "$Name.ps1")) + $Tokens)
@@ -67,8 +74,10 @@ public class Stub {
             return 0;
         }
         if (name == "pi" || name == "claude") {
-            File.WriteAllText(Path.Combine(dir, "prompt.txt"), Console.In.ReadToEnd(), new UTF8Encoding(false));
+            string prompt = Console.In.ReadToEnd();
+            File.WriteAllText(Path.Combine(dir, "prompt.txt"), prompt, new UTF8Encoding(false));
             File.WriteAllText(counter, (++count).ToString());
+            File.WriteAllText(Path.Combine(dir, "prompt-" + count + ".txt"), prompt, new UTF8Encoding(false));
             IList codes = (IList)Field("agentCodes", new object[] { 0 });
             int code = Convert.ToInt32(codes[Math.Min(count - 1, codes.Count - 1)]);
             Console.WriteLine(Field("agentOutput", "agent output"));
@@ -225,6 +234,23 @@ public class Stub {
         Set-Fixture @{ issues = @($ten); ticket = $ten; completeAfter = 2; agentCodes = @(1, 0); agentOutput = $message }
         $r = Run-Script ralph_loop @('/agent', 'claude', '/once', '/initial-retry-interval-seconds', '1', '/usage-poll-seconds', '1')
         Assert ($r.Code -eq 0 -and $r.ErrorText -match 'Retrying in 1 seconds') "retry: $message / $($r.ErrorText)"
+    }
+    foreach ($backend in @('pi', 'claude')) {
+        foreach ($firstCode in @(0, 1)) {
+            Set-Fixture @{ issues = @($ten); ticket = $ten; completeAfter = 2; agentCodes = @($firstCode, 0); agentOutput = 'HTTP 503 service unavailable' }
+            $r = Run-Script ralph_loop @('/agent', $backend, '/once', '/quiet', '/initial-retry-interval-seconds', '1')
+            Assert ($r.Code -eq 0) "$backend prompt attempts: $($r.ErrorText)"
+            $initialPrompt = [IO.File]::ReadAllText((Join-Path $temp 'prompt-1.txt')).Replace("`r`n", "`n")
+            $retryPrompt = [IO.File]::ReadAllText((Join-Path $temp 'prompt-2.txt')).Replace("`r`n", "`n")
+            Assert-StagedValidation $initialPrompt
+            Assert-StagedValidation $retryPrompt
+            Assert ($initialPrompt -ceq $expectedPrompt) "$backend initial prompt matches Bash verbatim"
+            if ($firstCode -eq 0) {
+                Assert ($retryPrompt.StartsWith($initialPrompt + "`n`n## Recovery attempt")) "$backend recovery retains original prompt"
+            } else {
+                Assert ($retryPrompt -ceq $initialPrompt) "$backend provider retry retains original prompt"
+            }
+        }
     }
     Set-Fixture @{ issues = @($ten); ticket = $ten; completeAfter = 5; agentCodes = @(4) }
     $r = Run-Script ralph_loop @('/agent', 'pi', '/once')
