@@ -9,21 +9,21 @@
 #   Run the same feature loop, then hunt for bugs:
 #     tools/ralph_loop.sh --agent pi --labels feature:platform-lifts \
 #       --use-branch feature/platform-lifts \
-#       --bug-hunt openai-codex/gpt-5.6-sol:high
+#       --bug-hunt openai-codex/gpt-6.1-sol:high
 #
 #   Run the feature loop, hunt for bugs, then fix matching bug tickets:
 #     tools/ralph_loop.sh --agent pi --labels feature:platform-lifts \
 #       --use-branch feature/platform-lifts \
-#       --bug-hunt openai-codex/gpt-5.6-sol:high --fix-bugs
+#       --bug-hunt openai-codex/gpt-6.1-sol:high --fix-bugs
 #
 #   Override selected difficulties while retaining fixed defaults (may be repeated):
 #     tools/ralph_loop.sh --agent pi \
-#       --model openai-codex/gpt-5.6-sol --effort medium \
+#       --model openai-codex/gpt-6.1-sol --effort medium \
 #       --difficulty-override easy=openai-codex/gpt-5.6-terra:high \
-#       --difficulty-override hard=openai-codex/gpt-5.6-sol:xhigh
+#       --difficulty-override hard=openai-codex/gpt-6.1-sol:xhigh
 #
 #   Pin the model and effort for every ticket instead of using adaptive selection:
-#     tools/ralph_loop.sh --agent pi --model openai-codex/gpt-5.6-sol \
+#     tools/ralph_loop.sh --agent pi --model openai-codex/gpt-6.1-sol \
 #       --effort high
 set -uo pipefail
 
@@ -167,7 +167,7 @@ for command in gh git jq perl curl "$agent"; do
 done
 
 if [[ -z "$model" ]]; then
-    [[ "$agent" == pi ]] && model="openai-codex/gpt-5.6-sol" || model="opus"
+    [[ "$agent" == pi ]] && model="openai-codex/gpt-6.1-sol" || model="opus"
 fi
 repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || die "Run this script from inside a Git repository."
 cd "$repo_root" || exit 1
@@ -238,7 +238,7 @@ adaptive_mapping() {
         echo "${difficulty_override_models[$difficulty]}|${difficulty_override_efforts[$difficulty]}"
         return 0
     fi
-    if [[ "$agent" == pi ]]; then small="openai-codex/gpt-5.6-terra"; large="openai-codex/gpt-5.6-sol"; else small=sonnet; large=opus; fi
+    if [[ "$agent" == pi ]]; then small="openai-codex/gpt-5.6-terra"; large="openai-codex/gpt-6.1-sol"; else small=sonnet; large=opus; fi
     case "$difficulty" in
         trivial) echo "$small|medium" ;;
         easy|small|low) echo "$small|high" ;;
