@@ -16,7 +16,7 @@ case "$*" in
     'issue list '*) echo '[{"number":10,"title":"Ticket 10","labels":[{"name":"ready-for-agent"},{"name":"difficulty:medium"},{"name":"priority:high"}],"assignees":[]}]' ;;
     'api repos/'*) echo 0 ;;
     'issue view '*'--json state --jq .state')
-        if ((count >= 2)); then echo CLOSED; else echo OPEN; fi ;;
+        if [[ "${TEST_MODE:-}" == stale ]] || ((count >= 2)); then echo CLOSED; else echo OPEN; fi ;;
     'issue view '*) echo '{"number":10,"title":"Ticket 10","url":"https://example.test/10","body":"","comments":[]}' ;;
     'issue edit '*) ;;
     *) echo "unexpected gh: $*" >&2; exit 99 ;;
@@ -27,10 +27,11 @@ cat >"$tmp/git" <<'EOF'
 set -euo pipefail
 case "$*" in
     'rev-parse --show-toplevel') echo "$DEV_SCRIPTS_TEST_DIR" ;;
-    'status '*) ;;
-    'rev-parse HEAD')
+    'status '*)
         count=$(cat "$DEV_SCRIPTS_TEST_DIR/count" 2>/dev/null || echo 0)
-        if ((count >= 2)); then echo new-head; else echo old-head; fi ;;
+        if [[ "${TEST_MODE:-}" == dirty ]] && ((count == 2)); then echo ' M tracked.txt'; fi ;;
+    # Completion must not require a new commit (already-implemented work).
+    'rev-parse HEAD') echo old-head ;;
     *) echo "unexpected git: $*" >&2; exit 99 ;;
 esac
 EOF
@@ -99,4 +100,26 @@ for backend in pi claude; do
     done
 done
 
-echo 'ok - staged validation retained in pi/Claude initial, recovery, and provider-retry prompts'
+for backend in pi claude; do
+    # A permanently stale listing must terminate without claiming or launching.
+    rm -f "$tmp/count" "$tmp"/prompt-*.txt
+    TEST_MODE=stale timeout 10 "$script_dir/ralph_loop.sh" --agent "$backend" \
+        --repo owner/repo --quiet >"$tmp/output" 2>&1
+    [[ ! -f "$tmp/count" ]]
+
+    # Also suppress stale re-selection after this run closes the ticket.
+    TEST_MODE=normal FIRST_RESULT=recovery timeout 10 "$script_dir/ralph_loop.sh" --agent "$backend" \
+        --repo owner/repo --quiet >"$tmp/output" 2>&1
+    [[ $(<"$tmp/count") == 2 ]]
+
+    # Closed is not sufficient when tracked changes remain; explain that reason.
+    rm -f "$tmp/count" "$tmp"/prompt-*.txt
+    TEST_MODE=dirty FIRST_RESULT=recovery timeout 10 "$script_dir/ralph_loop.sh" --agent "$backend" \
+        --repo owner/repo --once --quiet >"$tmp/output" 2>&1
+    [[ $(<"$tmp/count") == 3 ]]
+    assert_contains "$tmp/prompt-2.txt" 'Completion check: Issue state is OPEN, not CLOSED.'
+    assert_contains "$tmp/prompt-3.txt" 'Completion check: Issue is closed but the tracked worktree is dirty.'
+    if grep -Fq 'without closing ticket' "$tmp/prompt-3.txt"; then exit 1; fi
+done
+
+echo 'ok - staged prompts, stale listings, unchanged HEAD, and accurate recovery checks for pi/Claude'

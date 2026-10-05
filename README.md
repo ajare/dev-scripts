@@ -62,6 +62,15 @@ at a repository root and in a `tools` directory.
   rather than an empty assignment to override the default there. Windows does
   not provide systemd's separate `MemorySwapMax=0` setting.
 
+### Ticket completion
+
+Ralph rechecks issue state before claiming or launching a selected ticket because
+GitHub's open-issue listing can briefly lag closure. Closed or completed tickets
+are ignored for the remainder of that ticket loop, even if stale listings keep
+returning them. Completion requires a closed issue and a clean tracked worktree;
+it does not require a new commit when the work is already implemented. Recovery
+prompts report the actual failed check (issue state, worktree, or query failure).
+
 ### Tests
 
 ```powershell

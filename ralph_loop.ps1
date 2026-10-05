@@ -163,7 +163,7 @@ function Get-NextTicket([string[]] $LoopLabels) {
     $parents = @(Get-ParentNumbers $issues)
     $best = $null; $bestKey = ''
     foreach ($issue in $issues) {
-        if ($issue.number -in $parents) { continue }
+        if ($issue.number -in $parents -or $finishedTickets.ContainsKey([long]$issue.number)) { continue }
         $assignees = @(Get-Assignees $issue)
         if ($assignees.Count -gt 0 -and $currentUser -cnotin $assignees) { continue }
         if ((Get-BlockedCount $repo $issue.number) -ne 0) { continue }
@@ -278,12 +278,15 @@ $($issue.body)
 $comments
 "@
 }
-function Test-TicketComplete([long] $Number, [string] $StartingHead) {
+function Test-TicketComplete([long] $Number) {
+    $script:completionReason = ''
     $state = Invoke-Native gh @('issue', 'view', "$Number", '--repo', $repo, '--json', 'state', '--jq', '.state')
-    if ($state.Code -ne 0 -or $state.Text.Trim() -cne 'CLOSED') { return $false }
-    $head = Invoke-Native git @('rev-parse', 'HEAD')
+    if ($state.Code -ne 0) { $script:completionReason = 'Could not query issue state.'; return $false }
+    if ($state.Text.Trim() -cne 'CLOSED') { $script:completionReason = "Issue state is $($state.Text.Trim()), not CLOSED."; return $false }
     $worktree = Invoke-Native git @('status', '--porcelain', '--untracked-files=no')
-    return ($head.Code -eq 0 -and $worktree.Code -eq 0 -and $head.Text.Trim() -cne $StartingHead -and !$worktree.Text)
+    if ($worktree.Code -ne 0) { $script:completionReason = 'Could not inspect the tracked worktree.'; return $false }
+    if ($worktree.Text) { $script:completionReason = 'Issue is closed but the tracked worktree is dirty.'; return $false }
+    return $true
 }
 function Get-SessionUsage([string] $Kind, [string[]] $Sources) {
     $files = @()
@@ -387,10 +390,18 @@ $usageErrorPattern = 'usage limit|usage_limit_reached|usage cap|quota exceeded|i
 $serverErrorPattern = 'HTTP\s*(408|409|425|429|5[0-9][0-9])|status\s*(408|409|425|429|5[0-9][0-9])|server error|internal server error|service unavailable|bad gateway|gateway timeout|overloaded|temporarily unavailable|request timeout|timed out|ECONNRESET|ECONNREFUSED|ENETUNREACH|EAI_AGAIN|socket hang up|connection reset|connection closed|fetch failed|network error|server_error|stream.*(closed|terminated)'
 function Invoke-TicketLoop([string] $LoopName, [string[]] $ExtraLabels = @()) {
     $loopLabels = @($labels) + $ExtraLabels
+    $finishedTickets = @{}
     while ($true) {
         $ticket = Get-NextTicket $loopLabels
         if (!$ticket) { Write-Status "No unblocked, unclaimed '$readyLabel' tickets are available for the $LoopName loop."; break }
         $number = $ticket.number
+        # GitHub search can lag closure; do not claim or launch a closed ticket.
+        $state = Invoke-Checked gh @('issue', 'view', "$number", '--repo', $repo, '--json', 'state', '--jq', '.state')
+        if ($state.Trim() -ceq 'CLOSED') {
+            $finishedTickets[[long]$number] = $true
+            Write-Status "Skipping already-closed ticket #$number."
+            continue
+        }
         Write-Status "Selected #${number}: $($ticket.title)"
         $selection = Get-Selection $ticket
         Write-Host "Ticket #$number model: $($selection.Model); effort: $($selection.Effort) ($($selection.Source))."
@@ -404,7 +415,6 @@ function Invoke-TicketLoop([string] $LoopName, [string[]] $ExtraLabels = @()) {
         $sessionIds = @()
         if ($agent -eq 'pi') { [void][IO.Directory]::CreateDirectory($ticketSessionDirectory) }
         Write-Status "Ticket #$number started at $($started.ToString('yyyy-MM-ddTHH:mm:sszzz'))."
-        $startingHead = Invoke-Checked git @('rev-parse', 'HEAD')
         $originalPrompt = Get-TicketPrompt $number
         $prompt = $originalPrompt; $retryInterval = $initialRetry; $attempt = 0
         while ($true) {
@@ -423,15 +433,19 @@ function Invoke-TicketLoop([string] $LoopName, [string[]] $ExtraLabels = @()) {
             }
             if ($verbose) { $agentArgs += '--verbose' }
             $result = Invoke-Native $agent $agentArgs -InputText $prompt -LogPath $logPath -StripControl -Live:(!$quiet)
-            if (Test-TicketComplete $number $startingHead) { Write-Status "Ticket #$number completed successfully."; break }
+            if (Test-TicketComplete $number) {
+                $finishedTickets[[long]$number] = $true
+                Write-Status "Ticket #$number completed successfully."; break
+            }
             if ($result.Code -eq 0) {
-                Write-WarningLine "$agent exited successfully without completing #$number. Starting a recovery attempt using $logPath."
+                Write-WarningLine "$agent exited successfully without completing #${number}: $completionReason Starting a recovery attempt using $logPath."
                 $prompt = @"
 $originalPrompt
 
 ## Recovery attempt
 
-A previous agent attempt exited successfully without closing ticket #$number.
+A previous agent attempt exited successfully but did not satisfy the completion checks for ticket #$number.
+Completion check: $completionReason
 Inspect the previous attempt log at:
 
 $logPath

@@ -214,6 +214,7 @@ get_next_ticket() {
     local best="" best_key=""
     while IFS= read -r issue; do
         number=$(jq -r .number <<<"$issue")
+        [[ -n "${finished_tickets[$number]:-}" ]] && continue
         jq -e --argjson n "$number" 'index($n) != null' <<<"$parents" >/dev/null && continue
         assignee_count=$(jq '.assignees | length' <<<"$issue")
         assigned=$(jq -r --arg user "$current_user" '[.assignees[].login] | index($user) != null' <<<"$issue")
@@ -497,9 +498,16 @@ EOF
 strip_control() { perl -pe 's/\e\][^\a]*(?:\a|\e\\)//g; s/\e[PX^_].*?\e\\//g; s/\e\[[0-?]*[ -\/]*[@-~]//g; s/\e[@-_]//g; s/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]//g'; }
 
 ticket_complete() {
-    local number=$1 starting_head=$2 state
-    state=$(gh issue view "$number" --repo "$repo" --json state --jq .state) || return 1
-    [[ "$state" == CLOSED && "$(git rev-parse HEAD)" != "$starting_head" && -z "$(git status --porcelain --untracked-files=no)" ]]
+    local number=$1 state worktree
+    completion_reason=""
+    state=$(gh issue view "$number" --repo "$repo" --json state --jq .state) || {
+        completion_reason="Could not query issue state."; return 1;
+    }
+    [[ "$state" == CLOSED ]] || { completion_reason="Issue state is $state, not CLOSED."; return 1; }
+    worktree=$(git status --porcelain --untracked-files=no) || {
+        completion_reason="Could not inspect the tracked worktree."; return 1;
+    }
+    [[ -z "$worktree" ]] || { completion_reason="Issue is closed but the tracked worktree is dirty."; return 1; }
 }
 
 session_usage() {
@@ -595,12 +603,21 @@ run_ticket_loop() {
     local loop_name=$1
     shift
     loop_labels=("${labels[@]}" "$@")
+    local -A finished_tickets=()
 
 while true; do
     ticket=$(get_next_ticket); ticket_result=$?
     ((ticket_result != 2)) || die "Failed to query eligible tickets."
     if ((ticket_result == 1)); then status "No unblocked, unclaimed '$ready_label' tickets are available for the $loop_name loop."; break; fi
     number=$(jq -r .number <<<"$ticket"); title=$(jq -r .title <<<"$ticket")
+    # Search results can lag issue closure. Recheck before claiming or launching,
+    # and remember closed tickets so a stale listing cannot select them forever.
+    state=$(gh issue view "$number" --repo "$repo" --json state --jq .state) || die "Failed to query state for #$number."
+    if [[ "$state" == CLOSED ]]; then
+        finished_tickets[$number]=1
+        status "Skipping already-closed ticket #$number."
+        continue
+    fi
     status "Selected #$number: $title"
     select_ticket_model_and_effort "$ticket"
     echo "Ticket #$number model: $ticket_model; effort: $ticket_effort ($selection_source)."
@@ -613,7 +630,7 @@ while true; do
     ticket_session_directory="$log_directory/issue-$number-$timestamp-sessions"; session_ids=()
     [[ "$agent" == pi ]] && mkdir -p "$ticket_session_directory"
     status "Ticket #$number started at $(date -d "@$ticket_started" --iso-8601=seconds)."
-    starting_head=$(git rev-parse HEAD); original_prompt=$(get_ticket_prompt "$number") || exit 1
+    original_prompt=$(get_ticket_prompt "$number") || exit 1
     prompt=$original_prompt; retry_interval=$initial_retry; attempt=0
 
     while true; do
@@ -635,15 +652,19 @@ while true; do
         if ((quiet)); then "$agent" "${agent_args[@]}" 2>&1 | strip_control >"$log_path"; agent_exit=${PIPESTATUS[0]}
         else "$agent" "${agent_args[@]}" 2>&1 | strip_control | tee "$log_path"; agent_exit=${PIPESTATUS[0]}; fi
 
-        if ticket_complete "$number" "$starting_head"; then status "Ticket #$number completed successfully."; break; fi
+        if ticket_complete "$number"; then
+            finished_tickets[$number]=1
+            status "Ticket #$number completed successfully."; break
+        fi
         if ((agent_exit == 0)); then
-            warn "$agent exited successfully without completing #$number. Starting a recovery attempt using $log_path."
+            warn "$agent exited successfully without completing #$number: $completion_reason Starting a recovery attempt using $log_path."
             prompt=$(cat <<EOF
 $original_prompt
 
 ## Recovery attempt
 
-A previous agent attempt exited successfully without closing ticket #$number.
+A previous agent attempt exited successfully but did not satisfy the completion checks for ticket #$number.
+Completion check: $completion_reason
 Inspect the previous attempt log at:
 
 $log_path

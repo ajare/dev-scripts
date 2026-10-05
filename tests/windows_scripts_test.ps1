@@ -89,8 +89,8 @@ public class Stub {
         }
         if (name == "git") {
             if (command == "rev-parse --show-toplevel") Console.WriteLine(dir);
-            else if (command == "rev-parse HEAD") Console.WriteLine(count >= Convert.ToInt32(Field("completeAfter", 1)) ? "new-head" : "old-head");
-            else if (command.StartsWith("status ")) Console.Write((string)Field("worktree", ""));
+            else if (command == "rev-parse HEAD") Console.WriteLine(Convert.ToBoolean(Field("unchangedHead", false)) ? "old-head" : (count >= Convert.ToInt32(Field("completeAfter", 1)) ? "new-head" : "old-head"));
+            else if (command.StartsWith("status ")) Console.Write(count == Convert.ToInt32(Field("dirtyAfter", -1)) ? " M tracked.txt" : (string)Field("worktree", ""));
             else if (command == "rev-parse --abbrev-ref HEAD" || command == "symbolic-ref --quiet --short HEAD") Console.WriteLine("feature/test");
             else if (command == "symbolic-ref --quiet --short refs/remotes/origin/HEAD") Console.WriteLine("origin/main");
             else if (command.StartsWith("merge-base ")) Console.WriteLine("base-commit");
@@ -251,6 +251,26 @@ public class Stub {
                 Assert ($retryPrompt -ceq $initialPrompt) "$backend provider retry retains original prompt"
             }
         }
+    }
+    foreach ($backend in @('pi', 'claude')) {
+        # A stale listing of an already-closed issue never claims or launches it.
+        Set-Fixture @{ issues = @($ten); ticket = $ten; completeAfter = 0 }
+        $r = Run-Script ralph_loop @('/agent', $backend, '/once')
+        Assert ($r.Code -eq 0 -and $r.Text -match 'Skipping already-closed ticket #10') "$backend skips stale closed issue"
+        Assert (@(Get-Calls | Where-Object { $_.name -in @('pi', 'claude') -or ($_.args -contains 'edit') }).Count -eq 0) "$backend closed issue never claimed or launched"
+
+        # No new commit is needed, and repeated stale results are ignored.
+        Set-Fixture @{ issues = @($ten); ticket = $ten; completeAfter = 1; unchangedHead = $true }
+        $r = Run-Script ralph_loop @('/agent', $backend)
+        Assert ($r.Code -eq 0 -and (Get-Content -LiteralPath (Join-Path $temp 'agent-count')) -eq '1') "$backend completes with unchanged HEAD and suppresses stale re-selection"
+
+        Set-Fixture @{ issues = @($ten); ticket = $ten; completeAfter = 2; dirtyAfter = 2; unchangedHead = $true }
+        $r = Run-Script ralph_loop @('/agent', $backend, '/once', '/quiet')
+        Assert ($r.Code -eq 0 -and (Get-Content -LiteralPath (Join-Path $temp 'agent-count')) -eq '3') "$backend recovers closed dirty worktree"
+        $openPrompt = [IO.File]::ReadAllText((Join-Path $temp 'prompt-2.txt'))
+        $dirtyPrompt = [IO.File]::ReadAllText((Join-Path $temp 'prompt-3.txt'))
+        Assert ($openPrompt -match 'Completion check: Issue state is OPEN, not CLOSED\.') "$backend reports open issue"
+        Assert ($dirtyPrompt -match 'Completion check: Issue is closed but the tracked worktree is dirty\.' -and $dirtyPrompt -notmatch 'without closing ticket') "$backend reports dirty worktree rather than false closure failure"
     }
     Set-Fixture @{ issues = @($ten); ticket = $ten; completeAfter = 5; agentCodes = @(4) }
     $r = Run-Script ralph_loop @('/agent', 'pi', '/once')
