@@ -111,7 +111,10 @@ public class Stub {
                 string number = args[1].Substring(args[1].LastIndexOf('/') + 1);
                 object value; if (!blocked.TryGetValue(number, out value)) value = 0;
                 Print(new { issue_dependencies_summary = new { blocked_by = value } });
-            } else if (command.StartsWith("issue view ") && command.EndsWith("--json state --jq .state")) Console.WriteLine(count >= Convert.ToInt32(Field("completeAfter", 1)) ? "CLOSED" : "OPEN");
+            } else if (command.StartsWith("issue view ") && command.EndsWith("--json state --jq .state")) {
+                int completeAfter = Convert.ToBoolean(Field("sequentialTickets", false)) ? Int32.Parse(args[2]) + 1 : Convert.ToInt32(Field("completeAfter", 1));
+                Console.WriteLine(count >= completeAfter ? "CLOSED" : "OPEN");
+            }
             else if (command.StartsWith("issue view ")) Print(Field("ticket", null));
             else if (command.StartsWith("issue edit ")) { }
             else { Console.Error.WriteLine("unexpected gh: " + command); return 99; }
@@ -152,6 +155,28 @@ public class Stub {
     $r = Run-Script ralph_loop @('/agent', 'pi', '/difficulty-override', 'nope=x:high'); Assert ($r.Code -eq 2) 'override validation'
     $r = Run-Script ralph_loop @('/agent', 'pi', '/quiet', '/verbose'); Assert ($r.Code -eq 1) 'quiet/verbose conflict'
     $r = Run-Script ralph_loop @('/agent', 'pi', '/initial-retry-interval-seconds', '0'); Assert ($r.Code -eq 1) 'retry validation'
+
+    foreach ($value in @('0', '-1', '1.5', 'abc', '01', '2147483648', '999999999999999999999')) {
+        $r = Run-Script ralph_loop @('/agent', 'pi', '/max-tickets', $value)
+        Assert ($r.Code -eq 2 -and $r.ErrorText -match 'max-tickets') "invalid ticket cap: $value"
+    }
+    $r = Run-Script ralph_loop @('/agent', 'pi', '/max-tickets')
+    Assert ($r.Code -eq 2) 'missing ticket cap'
+    foreach ($backend in @('pi', 'claude')) {
+        foreach ($cap in @(0, 1, 2)) {
+            Set-Fixture @{ issues = @((New-Issue 1), (New-Issue 2), (New-Issue 3)); ticket = (New-Issue 1); sequentialTickets = $true }
+            $tokens = @('/agent', $backend, '/repo', 'owner/repo', '/quiet')
+            if ($cap) { $tokens += @('/max-tickets', "$cap") }
+            $r = Run-Script ralph_loop $tokens
+            $expected = if ($cap) { $cap } else { 3 }
+            $claims = @(Get-Calls | Where-Object { $_.name -eq 'gh' -and ($_.args -join ' ') -like 'issue edit *' })
+            Assert ($r.Code -eq 0 -and $claims.Count -eq $expected) "$backend ticket cap $cap"
+            Assert ((Get-Content -LiteralPath (Join-Path $temp 'agent-count')) -eq ($expected + 1)) 'recovery does not consume the ticket cap'
+        }
+        Set-Fixture @{ issues = @((New-Issue 1), (New-Issue 2)); ticket = (New-Issue 1); sequentialTickets = $true }
+        $r = Run-Script ralph_loop @('/agent', $backend, '/repo', 'owner/repo', '/max-tickets', '2', '/once', '/quiet')
+        Assert ($r.Code -eq 0 -and (Get-Content -LiteralPath (Join-Path $temp 'agent-count')) -eq 2) 'once remains more restrictive than ticket cap'
+    }
 
     $ten = New-Issue 10
     $eleven = New-Issue 11

@@ -51,6 +51,8 @@ Options:
   --initial-retry-interval-seconds N (default: 30)
   --max-retry-interval-seconds N     (default: 900)
   --usage-poll-seconds N             (default: 600)
+  --max-tickets N                   Complete at most N tickets across all loops
+                                    (positive integer; default: unlimited)
   --once                            Process at most one ticket
   --dry-run                         List every eligible ticket in the order the loop
                                     would process them, with difficulty, priority
@@ -75,6 +77,7 @@ adaptive=0 once=0 dry_run=0 quiet=0 verbose=0 bug_hunt=0 fix_bugs=0
 # alone cannot tell "user asked for medium" from "nobody said".
 model_set=0 effort_set=0
 initial_retry=30 max_retry=900 usage_poll=600
+max_tickets="" tickets_completed=0
 labels=()
 label_specs=()
 loop_labels=()
@@ -101,6 +104,10 @@ while (($#)); do
         --max-retry-interval-seconds) require_value "$@"; max_retry=$2; shift 2 ;;
         --usage-poll-seconds) require_value "$@"; usage_poll=$2; shift 2 ;;
         --adaptive-model-and-effort) adaptive=1; shift ;;
+        --max-tickets)
+            require_value "$@"
+            [[ -n "$2" ]] || { echo "error: --max-tickets requires a positive integer" >&2; exit 2; }
+            max_tickets=$2; shift 2 ;;
         --once) once=1; shift ;;
         --dry-run) dry_run=1; shift ;;
         --quiet) quiet=1; shift ;;
@@ -109,6 +116,15 @@ while (($#)); do
         *) echo "error: unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
+
+# Keep the numeric range identical to the PowerShell port and avoid overflow.
+if [[ -n "$max_tickets" ]]; then
+    [[ "$max_tickets" =~ ^[1-9][0-9]*$ && ${#max_tickets} -le 10 ]] \
+        && ((max_tickets <= 2147483647)) \
+        || { echo "error: --max-tickets must be a positive integer (1-2147483647)" >&2; exit 2; }
+else
+    max_tickets=0
+fi
 
 [[ "$agent" == pi || "$agent" == claude ]] || { echo "error: --agent must be pi or claude" >&2; exit 2; }
 if ((adaptive)) && ((model_set || effort_set)); then
@@ -606,6 +622,10 @@ run_ticket_loop() {
     local -A finished_tickets=()
 
 while true; do
+    if ((max_tickets > 0 && tickets_completed >= max_tickets)); then
+        status "Maximum ticket count ($max_tickets) reached."
+        break
+    fi
     ticket=$(get_next_ticket); ticket_result=$?
     ((ticket_result != 2)) || die "Failed to query eligible tickets."
     if ((ticket_result == 1)); then status "No unblocked, unclaimed '$ready_label' tickets are available for the $loop_name loop."; break; fi
@@ -683,6 +703,7 @@ EOF
         die "$agent failed for a non-retryable implementation reason on #$number. The issue remains assigned and open. Inspect $log_path."
     done
 
+    ((++tickets_completed))
     ticket_ended=$(date +%s)
     if [[ "$agent" == pi ]]; then usage_source=$ticket_session_directory; usage=$(session_usage pi "$ticket_session_directory" || true)
     else usage_source="Claude Code sessions ${session_ids[*]}"; ids=$(IFS=,; echo "${session_ids[*]}"); usage=$(session_usage claude "$ids" || true); fi

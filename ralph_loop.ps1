@@ -23,6 +23,8 @@ Options:
   /initial-retry-interval-seconds N  (default: 30)
   /max-retry-interval-seconds N      (default: 900)
   /usage-poll-seconds N              (default: 600)
+  /max-tickets N                    Complete at most N tickets across all loops
+                                     (positive integer; default: unlimited)
   /once                             Process at most one ticket
   /dry-run                          List eligible tickets in processing order with
                                      difficulty, priority, model/effort. Claims/runs nothing.
@@ -31,7 +33,7 @@ Options:
   /help
 '@
 }
-$options = Read-Options $args @('/agent', '/model', '/effort', '/repo', '/ready-label', '/labels', '/use-branch', '/bug-hunt', '/difficulty-override', '/initial-retry-interval-seconds', '/max-retry-interval-seconds', '/usage-poll-seconds') @('/adaptive-model-and-effort', '/fix-bugs', '/once', '/dry-run', '/quiet', '/verbose') ${function:Show-Usage}
+$options = Read-Options $args @('/agent', '/model', '/effort', '/repo', '/ready-label', '/labels', '/use-branch', '/bug-hunt', '/difficulty-override', '/initial-retry-interval-seconds', '/max-retry-interval-seconds', '/usage-poll-seconds', '/max-tickets') @('/adaptive-model-and-effort', '/fix-bugs', '/once', '/dry-run', '/quiet', '/verbose') ${function:Show-Usage}
 $agent = Get-Option $options '/agent'
 $model = Get-Option $options '/model'
 $effort = Get-Option $options '/effort' 'medium'
@@ -41,6 +43,14 @@ $useBranch = Get-Option $options '/use-branch'
 $labels = @(Get-Labels $options)
 $adaptive = $options.ContainsKey('/adaptive-model-and-effort')
 $once = $options.ContainsKey('/once')
+$maxTickets = 0
+$script:ticketsCompleted = 0
+if ($options.ContainsKey('/max-tickets')) {
+    $value = Get-Option $options '/max-tickets'
+    if ($value -cnotmatch '^[1-9][0-9]*$' -or ![int]::TryParse($value, [ref]$maxTickets)) {
+        Stop-Script '/max-tickets must be a positive integer (1-2147483647)' 2
+    }
+}
 $dryRun = $options.ContainsKey('/dry-run')
 $quiet = $options.ContainsKey('/quiet')
 $verbose = $options.ContainsKey('/verbose')
@@ -392,6 +402,10 @@ function Invoke-TicketLoop([string] $LoopName, [string[]] $ExtraLabels = @()) {
     $loopLabels = @($labels) + $ExtraLabels
     $finishedTickets = @{}
     while ($true) {
+        if ($maxTickets -gt 0 -and $script:ticketsCompleted -ge $maxTickets) {
+            Write-Status "Maximum ticket count ($maxTickets) reached."
+            break
+        }
         $ticket = Get-NextTicket $loopLabels
         if (!$ticket) { Write-Status "No unblocked, unclaimed '$readyLabel' tickets are available for the $LoopName loop."; break }
         $number = $ticket.number
@@ -464,6 +478,7 @@ Determine why that attempt did not complete the original request, then resolve t
             }
             Stop-Script "$agent failed for a non-retryable implementation reason on #$number. The issue remains assigned and open. Inspect $logPath."
         }
+        $script:ticketsCompleted++
         $ended = [DateTimeOffset]::Now
         if ($agent -eq 'pi') { $usageSource = $ticketSessionDirectory; $usage = Get-SessionUsage pi @($ticketSessionDirectory) }
         else { $usageSource = "Claude Code sessions $($sessionIds -join ' ')"; $usage = Get-SessionUsage claude $sessionIds }

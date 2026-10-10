@@ -62,6 +62,18 @@ at a repository root and in a `tools` directory.
   rather than an empty assignment to override the default there. Windows does
   not provide systemd's separate `MemorySwapMax=0` setting.
 
+### Ticket limit
+
+Use `ralph_loop.sh --agent pi --max-tickets 5` or
+`ralph_loop.ps1 /agent pi /max-tickets 5` to complete at most five tickets.
+Omitting the option leaves the ticket count unlimited. The value must be a
+positive integer (1–2147483647).
+
+The budget is shared by the initial and post-hunt bug-fix loops. Retries and
+skipped closed tickets do not count. Bug hunting still runs if requested;
+`--once` (`/once`) retains its one-ticket-per-loop behavior, subject to the
+shared cap. Dry-run continues to list all eligible tickets without running them.
+
 ### Ticket completion
 
 Ralph rechecks issue state before claiming or launching a selected ticket because
