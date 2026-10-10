@@ -27,7 +27,8 @@ Options:
                                      (positive integer; default: unlimited)
   /once                             Process at most one ticket
   /dry-run                          List eligible tickets in processing order with
-                                     difficulty, priority, model/effort. Claims/runs nothing.
+                                     difficulty, priority, model/effort, up to /max-tickets.
+                                     Claims/runs nothing.
   /quiet                            Suppress routine and agent output
   /verbose                          Enable loop and agent diagnostics
   /help
@@ -236,6 +237,11 @@ function Invoke-DryRun {
         $processed++; $completed[$best] = $true
         $selection = Get-Selection $nodeOf[$best] -Preview
         Write-Host ($format -f $processed, "#$best", (@(Get-Difficulties $nodeOf[$best]) -join ','), (Get-PriorityLabel $nodeOf[$best]), $selection.Model, $selection.Effort, $selection.Source)
+        if ($maxTickets -gt 0 -and $processed -ge $maxTickets) {
+            Write-Host ''
+            Write-Host "Maximum ticket count ($maxTickets) reached."
+            return
+        }
     }
     $stranded = @($nodeOf.Keys | Where-Object { !$completed.ContainsKey($_) } | Sort-Object)
     Write-Host ''

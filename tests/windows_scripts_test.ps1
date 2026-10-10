@@ -200,6 +200,22 @@ public class Stub {
     Assert ($query.variables.q -eq 'repo:owner/repo is:issue is:open label:"ready-for-agent" label:"feature:test" label:"label with spaces"') 'AND label search'
     Assert (@(Get-Calls | Where-Object { $_.name -in @('pi', 'claude') -or ($_.args -contains 'edit') -or ($_.args -contains 'checkout') }).Count -eq 0) 'dry run never mutates or runs agents'
 
+    foreach ($backend in @('pi', 'claude')) {
+        foreach ($cap in @(1, 2, 3, 5)) {
+            $r = Run-Script ralph_loop @('/agent', $backend, '/repo', 'owner/repo', '/dry-run', '/max-tickets', "$cap")
+            $expected = [Math]::Min($cap, 3)
+            Assert ($r.Code -eq 0 -and [regex]::Matches($r.Text, '(?m)^[0-9]+ +#[0-9]+ ').Count -eq $expected) "$backend dry-run cap $cap"
+            Assert ($r.Text -match '(?m)^1 +#12 ') 'capped preview preserves assigned-first ranking'
+            if ($cap -ge 2) { Assert ($r.Text -match '(?m)^2 +#10 ') 'capped preview ignores closed blockers' }
+            if ($cap -ge 3) { Assert ($r.Text -match '(?m)^3 +#14 ') 'capped preview preserves dependency order' }
+            if ($cap -le 3) {
+                Assert ($r.Text -match "Maximum ticket count \($cap\) reached" -and $r.Text -notmatch 'Not runnable|Nothing stranded') 'cap stops before stranded report'
+                Assert ($r.Text -notmatch '#11 |#13 ') 'tickets beyond cap are not listed'
+            } else { Assert ($r.Text -match '#11 +blocked by #8') 'oversized cap retains stranded report' }
+        }
+    }
+    Assert (@(Get-Calls | Where-Object { $_.name -in @('pi', 'claude') -or ($_.args -contains 'edit') -or ($_.args -contains 'checkout') }).Count -eq 0) 'capped dry run never mutates or runs agents'
+
     Set-Fixture @{ nodes = @((New-Node (New-Issue 1 @('difficulty:hard', 'difficulty:easy'))), (New-Node (New-Issue 2 @('ready-for-agent')))) }
     $r = Run-Script ralph_loop @('/agent', 'claude', '/dry-run', '/adaptive-model-and-effort')
     Assert ($r.Code -eq 0 -and $r.Text -match '\(conflict\)' -and $r.Text -match '\(unresolved\)') 'preview unresolved/conflicting difficulties'

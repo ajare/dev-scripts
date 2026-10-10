@@ -72,7 +72,9 @@ positive integer (1–2147483647).
 The budget is shared by the initial and post-hunt bug-fix loops. Retries and
 skipped closed tickets do not count. Bug hunting still runs if requested;
 `--once` (`/once`) retains its one-ticket-per-loop behavior, subject to the
-shared cap. Dry-run continues to list all eligible tickets without running them.
+shared cap. Dry-run lists at most the specified number of tickets in processing
+order without running them. Once the cap is reached, remaining tickets are not
+listed or reported as stranded.
 
 ### Ticket completion
 

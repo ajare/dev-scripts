@@ -54,7 +54,7 @@ Options:
   --max-tickets N                   Complete at most N tickets across all loops
                                     (positive integer; default: unlimited)
   --once                            Process at most one ticket
-  --dry-run                         List every eligible ticket in the order the loop
+  --dry-run                         List eligible tickets (up to --max-tickets) in the order the loop
                                     would process them, with difficulty, priority
                                     and the model/effort that would be chosen.
                                     Claims and runs nothing.
@@ -437,6 +437,11 @@ run_dry_run() {
         printf '%-6s %-8s %-11s %-10s %-28s %-8s %s\n' \
             "$processed" "#$best" "$(difficulty_of "${node_of[$best]}")" \
             "$(priority_label_of "${node_of[$best]}")" "$ticket_model" "$ticket_effort" "$selection_source"
+        if ((max_tickets > 0 && processed >= max_tickets)); then
+            echo
+            echo "Maximum ticket count ($max_tickets) reached."
+            return 0
+        fi
     done
 
     # Anything never reached: owned by someone else, or blocked by something that
