@@ -18,13 +18,18 @@ Options:
                                      Also applied to tickets created by /bug-hunt
   /use-branch BRANCH                Check out/create this branch
   /bug-hunt MODEL:EFFORT            Run bug_hunt.ps1 after the main loop
+  /bug-hunt-implemented-only M:E    Run the bug hunt scoped to the commits and
+                                     tickets implemented by the initial loop;
+                                     implies the hunt and is mutually
+                                     exclusive with /bug-hunt
   /fix-bugs                         After bug hunting, process its 'bug' tickets;
                                      also applies every /labels filter
   /initial-retry-interval-seconds N  (default: 30)
   /max-retry-interval-seconds N      (default: 900)
   /usage-poll-seconds N              (default: 600)
-  /max-tickets N                    Complete at most N tickets across all loops
-                                     (positive integer; default: unlimited)
+  /max-tickets N                    Complete at most N tickets in the main loop
+                                     (the /fix-bugs loop is unlimited;
+                                     positive integer; default: unlimited)
   /once                             Process at most one ticket
   /dry-run                          List eligible tickets in processing order with
                                      difficulty, priority, model/effort, up to /max-tickets.
@@ -34,7 +39,7 @@ Options:
   /help
 '@
 }
-$options = Read-Options $args @('/agent', '/model', '/effort', '/repo', '/ready-label', '/labels', '/use-branch', '/bug-hunt', '/difficulty-override', '/initial-retry-interval-seconds', '/max-retry-interval-seconds', '/usage-poll-seconds', '/max-tickets') @('/adaptive-model-and-effort', '/fix-bugs', '/once', '/dry-run', '/quiet', '/verbose') ${function:Show-Usage}
+$options = Read-Options $args @('/agent', '/model', '/effort', '/repo', '/ready-label', '/labels', '/use-branch', '/bug-hunt', '/bug-hunt-implemented-only', '/difficulty-override', '/initial-retry-interval-seconds', '/max-retry-interval-seconds', '/usage-poll-seconds', '/max-tickets') @('/adaptive-model-and-effort', '/fix-bugs', '/once', '/dry-run', '/quiet', '/verbose') ${function:Show-Usage}
 $agent = Get-Option $options '/agent'
 $model = Get-Option $options '/model'
 $effort = Get-Option $options '/effort' 'medium'
@@ -46,6 +51,7 @@ $adaptive = $options.ContainsKey('/adaptive-model-and-effort')
 $once = $options.ContainsKey('/once')
 $maxTickets = 0
 $script:ticketsCompleted = 0
+$script:implementedTickets = @()
 if ($options.ContainsKey('/max-tickets')) {
     $value = Get-Option $options '/max-tickets'
     if ($value -cnotmatch '^[1-9][0-9]*$' -or ![int]::TryParse($value, [ref]$maxTickets)) {
@@ -55,7 +61,11 @@ if ($options.ContainsKey('/max-tickets')) {
 $dryRun = $options.ContainsKey('/dry-run')
 $quiet = $options.ContainsKey('/quiet')
 $verbose = $options.ContainsKey('/verbose')
-$bugHunt = $options.ContainsKey('/bug-hunt')
+$bugHuntImplementedOnly = $options.ContainsKey('/bug-hunt-implemented-only')
+if ($options.ContainsKey('/bug-hunt') -and $bugHuntImplementedOnly) {
+    Stop-Script '/bug-hunt and /bug-hunt-implemented-only are mutually exclusive; the latter already enables the hunt, scoped to the implemented tickets' 2
+}
+$bugHunt = $options.ContainsKey('/bug-hunt') -or $bugHuntImplementedOnly
 $fixBugs = $options.ContainsKey('/fix-bugs')
 Assert-Agent $agent $effort 1
 if ($adaptive -and ($options.ContainsKey('/model') -or $options.ContainsKey('/effort'))) {
@@ -73,8 +83,9 @@ foreach ($spec in $overrideSpecs) {
 }
 $bugHuntModel = ''; $bugHuntEffort = ''
 if ($bugHunt) {
-    $spec = Get-Option $options '/bug-hunt'
-    if ($spec -cnotmatch '^(.+):(off|minimal|low|medium|high|xhigh|max)$') { Stop-Script '/bug-hunt must be in the form MODEL:EFFORT, with a supported effort' 2 }
+    $specOption = if ($bugHuntImplementedOnly) { '/bug-hunt-implemented-only' } else { '/bug-hunt' }
+    $spec = Get-Option $options $specOption
+    if ($spec -cnotmatch '^(.+):(off|minimal|low|medium|high|xhigh|max)$') { Stop-Script "$specOption must be in the form MODEL:EFFORT, with a supported effort" 2 }
     $bugHuntModel = $Matches[1]; $bugHuntEffort = $Matches[2]
 }
 $initialRetry = Get-Option $options '/initial-retry-interval-seconds' '30'
@@ -93,7 +104,7 @@ if ($agent -eq 'claude') {
         if ($mapping.Effort -cnotmatch '^(low|medium|high|xhigh|max)$') { Stop-Script "Difficulty override effort '$($mapping.Effort)' is not supported by claude. Use low, medium, high, xhigh, or max." }
     }
 }
-if ($fixBugs -and !$bugHunt) { Write-WarningLine '/fix-bugs has no effect without /bug-hunt.'; $fixBugs = $false }
+if ($fixBugs -and !$bugHunt) { Write-WarningLine '/fix-bugs has no effect without a bug hunt.'; $fixBugs = $false }
 Require-Commands @('gh', 'git', $agent)
 if (!$model) { $model = if ($agent -eq 'pi') { 'openai-codex/gpt-5.6-sol' } else { 'opus' } }
 function Write-Status([string] $Message) { if (!$quiet) { Write-Host $Message } }
@@ -404,11 +415,11 @@ function Show-ProviderUsage($Usage) {
 }
 $usageErrorPattern = 'usage limit|usage_limit_reached|usage cap|quota exceeded|insufficient_quota|out of credits|credit balance|billing limit|subscription limit|weekly limit|monthly limit|weighted tokens|token limit.*reset|rate limit.*reset|limit resets? at'
 $serverErrorPattern = 'HTTP\s*(408|409|425|429|5[0-9][0-9])|status\s*(408|409|425|429|5[0-9][0-9])|server error|internal server error|service unavailable|bad gateway|gateway timeout|overloaded|temporarily unavailable|request timeout|timed out|ECONNRESET|ECONNREFUSED|ENETUNREACH|EAI_AGAIN|socket hang up|connection reset|connection closed|fetch failed|network error|server_error|stream.*(closed|terminated)'
-function Invoke-TicketLoop([string] $LoopName, [string[]] $ExtraLabels = @()) {
+function Invoke-TicketLoop([string] $LoopName, [string[]] $ExtraLabels = @(), [switch] $Unlimited) {
     $loopLabels = @($labels) + $ExtraLabels
     $finishedTickets = @{}
     while ($true) {
-        if ($maxTickets -gt 0 -and $script:ticketsCompleted -ge $maxTickets) {
+        if (!$Unlimited -and $maxTickets -gt 0 -and $script:ticketsCompleted -ge $maxTickets) {
             Write-Status "Maximum ticket count ($maxTickets) reached."
             break
         }
@@ -455,6 +466,10 @@ function Invoke-TicketLoop([string] $LoopName, [string[]] $ExtraLabels = @()) {
             $result = Invoke-Native $agent $agentArgs -InputText $prompt -LogPath $logPath -StripControl -Live:(!$quiet)
             if (Test-TicketComplete $number) {
                 $finishedTickets[[long]$number] = $true
+                # Script scope on purpose: with /bug-hunt-implemented-only the post-loop
+                # hunt scopes itself to these tickets. The hunt runs before the bug-fix
+                # loop, so at hunt time this holds exactly the initial loop's completions.
+                $script:implementedTickets += $number
                 Write-Status "Ticket #$number completed successfully."; break
             }
             if ($result.Code -eq 0) {
@@ -517,18 +532,23 @@ try {
     if ($dryRun) { Invoke-DryRun; exit 0 }
     Invoke-TicketLoop 'initial'
     if ($bugHunt) {
-        $huntArgs = @('/agent', $agent, '/model', $bugHuntModel, '/effort', $bugHuntEffort, '/publish', 'tracker')
-        if ($useBranch) { $huntArgs += '/branch-only' }
-        if ($options.ContainsKey('/labels')) { foreach ($spec in $options['/labels']) { $huntArgs += @('/labels', $spec) } }
-        Write-Status "Starting post-loop bug hunt with $bugHuntModel at $bugHuntEffort effort."
-        # Separate process keeps the child script's exit and functions isolated.
-        $engine = (Get-Process -Id $PID).Path
-        $result = Invoke-Native $engine (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'bug_hunt.ps1')) + $huntArgs) -Live
-        if ($result.Code -ne 0) {
-            if ($fixBugs) { Stop-Script 'Bug hunt failed; bug-fix loop will not start.' }
-            exit $result.Code
+        if ($bugHuntImplementedOnly -and !$script:implementedTickets.Count) {
+            Write-Status 'No tickets were implemented by the initial loop; skipping the scoped bug hunt.'
+        } else {
+            $huntArgs = @('/agent', $agent, '/model', $bugHuntModel, '/effort', $bugHuntEffort, '/publish', 'tracker')
+            if ($useBranch) { $huntArgs += '/branch-only' }
+            if ($bugHuntImplementedOnly) { $huntArgs += @('/tickets', ($script:implementedTickets -join ',')) }
+            if ($options.ContainsKey('/labels')) { foreach ($spec in $options['/labels']) { $huntArgs += @('/labels', $spec) } }
+            Write-Status "Starting post-loop bug hunt with $bugHuntModel at $bugHuntEffort effort."
+            # Separate process keeps the child script's exit and functions isolated.
+            $engine = (Get-Process -Id $PID).Path
+            $result = Invoke-Native $engine (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $PSScriptRoot 'bug_hunt.ps1')) + $huntArgs) -Live
+            if ($result.Code -ne 0) {
+                if ($fixBugs) { Stop-Script 'Bug hunt failed; bug-fix loop will not start.' }
+                exit $result.Code
+            }
+            if ($fixBugs) { Write-Status 'Starting post-hunt bug-fix loop.'; Invoke-TicketLoop 'post-hunt bug-fix' @('bug') -Unlimited }
         }
-        if ($fixBugs) { Write-Status 'Starting post-hunt bug-fix loop.'; Invoke-TicketLoop 'post-hunt bug-fix' @('bug') }
     }
     exit 0
 } finally { Set-Location -LiteralPath $originalLocation.Path }

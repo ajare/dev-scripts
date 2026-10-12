@@ -15,6 +15,10 @@ Required:
                     tickets under docs/tickets/bug-hunt/
 Options:
   /branch-only              Inspect only commits unique to the current branch
+  /tickets N[,N...]         Limit the hunt to the changes committed for these
+                            tickets; commits are found via ticket references (#N)
+                            in commit messages. May be repeated. With
+                            /branch-only, only branch-unique commits are searched
   /labels LABEL[,LABEL...]  Additional labels for every ticket; may be repeated
   /help
 Environment:
@@ -26,7 +30,7 @@ Examples:
   .\bug_hunt.ps1 /agent claude /model opus /effort high /publish docs /branch-only
 '@
 }
-$options = Read-Options $args @('/agent', '/model', '/effort', '/publish', '/labels') @('/branch-only') ${function:Show-Usage}
+$options = Read-Options $args @('/agent', '/model', '/effort', '/publish', '/tickets', '/labels') @('/branch-only') ${function:Show-Usage}
 $agent = Get-Option $options '/agent'
 $model = Get-Option $options '/model'
 $effort = Get-Option $options '/effort'
@@ -34,6 +38,15 @@ $publish = Get-Option $options '/publish'
 Assert-Agent $agent $effort
 if (!$model) { Stop-Script '/model is required' 2 }
 if ($publish -cnotin @('tracker', 'docs')) { Stop-Script '/publish must be tracker or docs' 2 }
+$ticketScope = @()
+if ($options.ContainsKey('/tickets')) {
+    foreach ($spec in $options['/tickets']) {
+        foreach ($entry in $spec.Split(',')) {
+            if ($entry -cnotmatch '^[1-9][0-9]*$') { Stop-Script "/tickets entries must be positive integers, got '$entry'" 2 }
+            $ticketScope += $entry
+        }
+    }
+}
 Require-Commands @('git', $agent)
 if ($publish -eq 'tracker') { Require-Commands @('gh') }
 $originalLocation = Get-Location
@@ -61,6 +74,37 @@ try {
         $uniqueCount = Invoke-Checked git @('rev-list', '--count', $commitRange)
         $scopePrompt = @"
 Confine the hunt to commits unique to the current branch '$currentBranch' and to bugs introduced by their changes. The default branch ref is '$defaultRef', the merge base is '$mergeBase', and the unique commit range is '$commitRange' ($uniqueCount commits). Start with ``git log $commitRange`` and ``git diff $mergeBase..HEAD``. You may inspect surrounding code and run focused tests only to understand or prove those changes, but do not report pre-existing bugs outside this branch scope.
+"@
+    }
+    if ($ticketScope.Count) {
+        if ($options.ContainsKey('/branch-only')) {
+            $logRange = $commitRange
+            $rangeDescription = "'$commitRange' (commits unique to branch '$currentBranch')"
+        } else {
+            $logRange = 'HEAD'
+            $rangeDescription = 'HEAD'
+        }
+        $ticketList = ($ticketScope | ForEach-Object { "#$_" }) -join ', '
+        $ticketCommits = ''
+        foreach ($ticket in $ticketScope) {
+            # The ticket prompt requires every commit message to reference its ticket as #N;
+            # the pattern keeps #1 from also matching #10, #11, and so on.
+            $log = Invoke-Native git @('log', '--format=%h %s', '--extended-regexp', "--grep=#$ticket([^0-9]|`$)", $logRange)
+            if ($log.Code -ne 0) { Stop-Script "git log failed while resolving commits for ticket #$ticket." }
+            foreach ($line in @($log.Text -split "`n")) {
+                $line = $line.TrimEnd("`r")
+                if ($line.Length) { $ticketCommits += "- #${ticket}: $line`n" }
+            }
+        }
+        $ticketCommits = $ticketCommits.TrimEnd("`n")
+        if (!$ticketCommits) {
+            Write-Host "No commits in $logRange reference tickets $ticketList; nothing to hunt."
+            exit 0
+        }
+        $scopePrompt = @"
+Confine the hunt to bugs introduced by the changes implemented for these tickets: $ticketList. Their commits, found by searching $rangeDescription for commit messages referencing each ticket number, are:
+$ticketCommits
+Start with ``git show`` on these commits and review only the changes they introduce, consulting the ticket text (for example ``gh issue view``) only to understand them. You may inspect surrounding code and run focused tests only to understand or prove those changes, but do not report pre-existing bugs outside this ticket scope.
 "@
     }
     if ($publish -eq 'tracker') {

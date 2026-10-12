@@ -65,16 +65,31 @@ at a repository root and in a `tools` directory.
 ### Ticket limit
 
 Use `ralph_loop.sh --agent pi --max-tickets 5` or
-`ralph_loop.ps1 /agent pi /max-tickets 5` to complete at most five tickets.
-Omitting the option leaves the ticket count unlimited. The value must be a
-positive integer (1–2147483647).
+`ralph_loop.ps1 /agent pi /max-tickets 5` to complete at most five tickets in
+the main loop. Omitting the option leaves the ticket count unlimited. The value
+must be a positive integer (1–2147483647).
 
-The budget is shared by the initial and post-hunt bug-fix loops. Retries and
-skipped closed tickets do not count. Bug hunting still runs if requested;
-`--once` (`/once`) retains its one-ticket-per-loop behavior, subject to the
-shared cap. Dry-run lists at most the specified number of tickets in processing
-order without running them. Once the cap is reached, remaining tickets are not
-listed or reported as stranded.
+The cap applies only to the initial loop. The post-hunt bug-fix loop ignores it
+and processes every bug ticket it can find. Retries and skipped closed tickets
+do not count. Bug hunting still runs if requested; `--once` (`/once`) retains
+its one-ticket-per-loop behavior, subject to the cap in the initial loop.
+Dry-run lists at most the specified number of tickets in processing order
+without running them. Once the cap is reached, remaining tickets are not listed
+or reported as stranded.
+
+### Ticket-scoped bug hunts
+
+With `--bug-hunt-implemented-only MODEL:EFFORT`
+(`/bug-hunt-implemented-only MODEL:EFFORT`), the post-loop bug hunt is confined
+to the tickets the initial loop implemented and the commits that implemented
+them. The option enables the hunt by itself and is mutually exclusive with
+`--bug-hunt` (`/bug-hunt`). The loop passes the completed ticket numbers to
+`bug_hunt.sh` (`--tickets`) or `bug_hunt.ps1` (`/tickets`), which finds the
+relevant commits by the `#N` ticket references the ticket prompt requires in
+every commit message. Combined with `--use-branch` (`/use-branch`), only
+branch-unique commits are searched. If the initial loop implemented nothing, the
+hunt (and any bug-fix loop) is skipped; if no matching commits are found, the
+hunt reports the empty scope and does not launch an agent.
 
 ### Ticket completion
 

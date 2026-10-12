@@ -19,6 +19,10 @@ Required:
 Options:
   --branch-only              Inspect only commits unique to the current branch and the
                              changes introduced by those commits
+  --tickets N[,N...]         Limit the hunt to the changes committed for these
+                             tickets; commits are found via ticket references (#N)
+                             in commit messages. May be repeated. With
+                             --branch-only, only branch-unique commits are searched
   --labels LABEL[,LABEL...]  Additional labels for every published ticket; may be repeated
   --help
 
@@ -41,6 +45,7 @@ require_value() { [[ $# -ge 2 ]] || { echo "error: $1 requires a value" >&2; exi
 
 agent="" model="" effort="" publish="" branch_only=0
 labels=()
+tickets=()
 while (($#)); do
     case "$1" in
         --agent) require_value "$@"; agent=$2; shift 2 ;;
@@ -48,6 +53,15 @@ while (($#)); do
         --effort) require_value "$@"; effort=$2; shift 2 ;;
         --publish) require_value "$@"; publish=$2; shift 2 ;;
         --branch-only) branch_only=1; shift ;;
+        --tickets)
+            require_value "$@"
+            IFS=',' read -ra new_tickets <<<"$2"
+            for new_ticket in "${new_tickets[@]}"; do
+                [[ "$new_ticket" =~ ^[1-9][0-9]*$ ]] \
+                    || { echo "error: --tickets entries must be positive integers, got '$new_ticket'" >&2; exit 2; }
+                tickets+=("$new_ticket")
+            done
+            shift 2 ;;
         --labels)
             require_value "$@"
             IFS=',' read -ra new_labels <<<"$2"
@@ -104,6 +118,37 @@ if ((branch_only)); then
     unique_count=$(git rev-list --count "$commit_range") || exit 1
     scope_prompt=$(cat <<EOF
 Confine the hunt to commits unique to the current branch '$current_branch' and to bugs introduced by their changes. The default branch ref is '$default_ref', the merge base is '$merge_base', and the unique commit range is '$commit_range' ($unique_count commits). Start with \`git log $commit_range\` and \`git diff $merge_base..HEAD\`. You may inspect surrounding code and run focused tests only to understand or prove those changes, but do not report pre-existing bugs outside this branch scope.
+EOF
+)
+fi
+
+if ((${#tickets[@]})); then
+    if ((branch_only)); then
+        log_range="$commit_range"
+        range_description="'$commit_range' (commits unique to branch '$current_branch')"
+    else
+        log_range="HEAD"
+        range_description="HEAD"
+    fi
+    ticket_list=$(printf '#%s, ' "${tickets[@]}")
+    ticket_list=${ticket_list%, }
+    ticket_commits=""
+    for ticket in "${tickets[@]}"; do
+        # The ticket prompt requires every commit message to reference its ticket as #N;
+        # the pattern keeps #1 from also matching #10, #11, and so on.
+        while IFS= read -r commit_line; do
+            [[ -z "$commit_line" ]] || ticket_commits+="- #${ticket}: ${commit_line}"$'\n'
+        done < <(git log --format='%h %s' --extended-regexp --grep="#${ticket}([^0-9]|$)" "$log_range")
+    done
+    ticket_commits=${ticket_commits%$'\n'}
+    if [[ -z "$ticket_commits" ]]; then
+        echo "No commits in $log_range reference tickets $ticket_list; nothing to hunt."
+        exit 0
+    fi
+    scope_prompt=$(cat <<EOF
+Confine the hunt to bugs introduced by the changes implemented for these tickets: $ticket_list. Their commits, found by searching $range_description for commit messages referencing each ticket number, are:
+$ticket_commits
+Start with \`git show\` on these commits and review only the changes they introduce, consulting the ticket text (for example \`gh issue view\`) only to understand them. You may inspect surrounding code and run focused tests only to understand or prove those changes, but do not report pre-existing bugs outside this ticket scope.
 EOF
 )
 fi

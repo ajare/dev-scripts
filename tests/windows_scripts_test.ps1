@@ -94,6 +94,7 @@ public class Stub {
             else if (command == "rev-parse --abbrev-ref HEAD" || command == "symbolic-ref --quiet --short HEAD") Console.WriteLine("feature/test");
             else if (command == "symbolic-ref --quiet --short refs/remotes/origin/HEAD") Console.WriteLine("origin/main");
             else if (command.StartsWith("merge-base ")) Console.WriteLine("base-commit");
+            else if (command.StartsWith("log ")) { foreach (var line in (IList)Field("logLines", new object[0])) Console.WriteLine(line); }
             else if (command.StartsWith("rev-list ")) Console.WriteLine("3");
             else if (command.StartsWith("checkout ") || command.StartsWith("show-ref ") || command.StartsWith("rev-parse --verify ")) { }
             else { Console.Error.WriteLine("unexpected git: " + command); return 99; }
@@ -105,7 +106,7 @@ public class Stub {
             else if (command == "api graphql --input -") {
                 File.WriteAllText(Path.Combine(dir, "graphql.json"), Console.In.ReadToEnd());
                 Print(new { data = new { search = new { nodes = Field("nodes", new object[0]) } } });
-            } else if (command.StartsWith("issue list ")) Print(Field("issues", new object[0]));
+            } else if (command.StartsWith("issue list ")) Print(command.Contains("--label bug") ? Field("bugIssues", new object[0]) : Field("issues", new object[0]));
             else if (command.StartsWith("api repos/")) {
                 var blocked = (Dictionary<string, object>)Field("blocked", new Dictionary<string, object>());
                 string number = args[1].Substring(args[1].LastIndexOf('/') + 1);
@@ -327,6 +328,48 @@ public class Stub {
     Set-Fixture @{ agentCodes = @(8) }
     $r = Run-Script ralph_loop @('/agent', 'pi', '/bug-hunt', 'test/model:high', '/fix-bugs')
     Assert ($r.Code -eq 1 -and $r.ErrorText -match 'Bug hunt failed') 'failed hunt prevents fixes'
+
+    # /tickets scopes the hunt to the commits referencing those tickets.
+    Set-Fixture @{ logLines = @('abc1234 Implement the thing (#7)', 'def5678 Follow-up work (#9)') }
+    $r = Run-Script bug_hunt @('/agent', 'pi', '/model', 'test/model', '/effort', 'high', '/publish', 'docs', '/tickets', '7,9')
+    Assert ($r.Code -eq 0) "ticket-scoped hunt: $($r.ErrorText) $($r.Text)"
+    $prompt = (Get-Content -LiteralPath (Join-Path $temp 'prompt.txt') -Raw -Encoding UTF8).Replace("`r`n", "`n")
+    Assert ($prompt -match 'Confine the hunt to bugs introduced by the changes implemented for these tickets: #7, #9\.' -and $prompt -match 'git show') 'ticket scope prompt'
+    Assert ($prompt -notmatch 'Review the entire codebase') 'scoped hunt is not codebase-wide'
+    $shell = [IO.File]::ReadAllText((Join-Path $root 'bug_hunt.sh')).Replace("`r`n", "`n")
+    $ticketTemplate = [regex]::Matches($shell, '(?ms)^    scope_prompt=\$\(cat <<EOF\n(.*?)\nEOF\n\)')[1].Groups[1].Value
+    $ticketTemplate = $ticketTemplate.Replace('$ticket_list', '#7, #9').Replace('$range_description', 'HEAD').Replace('$ticket_commits', "- #7: abc1234 Implement the thing (#7)`n- #9: def5678 Follow-up work (#9)").Replace('\`', '`')
+    Assert ($prompt.Contains($ticketTemplate)) 'ticket scope prompt matches Bash verbatim'
+    Set-Fixture @{}
+    $r = Run-Script bug_hunt @('/agent', 'pi', '/model', 'test/model', '/effort', 'high', '/publish', 'docs', '/tickets', '77')
+    Assert ($r.Code -eq 0 -and $r.Text -match 'No commits in HEAD reference tickets #77; nothing to hunt\.') 'empty ticket scope launches no agent'
+    Assert (!(Test-Path -LiteralPath (Join-Path $temp 'prompt.txt'))) 'empty ticket scope never runs the agent'
+    $r = Run-Script bug_hunt @('/agent', 'pi', '/model', 'test/model', '/effort', 'high', '/publish', 'docs', '/tickets', '7,abc')
+    Assert ($r.Code -eq 2 -and $r.ErrorText -match 'tickets entries must be positive integers') 'invalid ticket number'
+
+    # /bug-hunt-implemented-only implies the hunt and scopes it to the implemented tickets.
+    Set-Fixture @{ issues = @((New-Issue 1), (New-Issue 2)); ticket = (New-Issue 1); sequentialTickets = $true; logLines = @('c0ffee1 Implement #1', 'c0ffee2 Implement #2') }
+    $r = Run-Script ralph_loop @('/agent', 'pi', '/repo', 'owner/repo', '/bug-hunt-implemented-only', 'test:high', '/quiet')
+    Assert ($r.Code -eq 0) "implemented-only hunt: $($r.ErrorText) $($r.Text)"
+    $prompt = Get-Content -LiteralPath (Join-Path $temp 'prompt.txt') -Raw -Encoding UTF8
+    Assert ($prompt -match 'these tickets: #1, #2\.' -and $prompt -match '- #2: c0ffee2 Implement #2') 'post-loop hunt scoped to implemented tickets'
+    $r = Run-Script ralph_loop @('/agent', 'pi', '/bug-hunt', 'test:high', '/bug-hunt-implemented-only', 'test:high')
+    Assert ($r.Code -eq 2 -and $r.ErrorText -match 'mutually exclusive') 'hunt options are mutually exclusive'
+    $r = Run-Script ralph_loop @('/agent', 'pi', '/bug-hunt-implemented-only', 'test')
+    Assert ($r.Code -eq 2 -and $r.ErrorText -match '/bug-hunt-implemented-only must be in the form MODEL:EFFORT') 'implemented-only spec validation'
+    Set-Fixture @{}
+    $r = Run-Script ralph_loop @('/agent', 'pi', '/repo', 'owner/repo', '/bug-hunt-implemented-only', 'test:high')
+    Assert ($r.Code -eq 0 -and $r.Text -match 'skipping the scoped bug hunt') 'empty implemented set skips the hunt'
+    Assert (!(Test-Path -LiteralPath (Join-Path $temp 'agent-count'))) 'skipped hunt never launches an agent'
+
+    foreach ($backend in @('pi', 'claude')) {
+        # The main loop stops at the cap; the bug-fix loop ignores it and fixes every bug ticket.
+        Set-Fixture @{ issues = @((New-Issue 1), (New-Issue 2), (New-Issue 3)); bugIssues = @((New-Issue 4), (New-Issue 5)); ticket = (New-Issue 1); sequentialTickets = $true }
+        $r = Run-Script ralph_loop @('/agent', $backend, '/repo', 'owner/repo', '/max-tickets', '2', '/bug-hunt', 'test:high', '/fix-bugs', '/quiet')
+        Assert ($r.Code -eq 0) "$backend uncapped bug-fix loop: $($r.ErrorText) $($r.Text)"
+        $claims = @(Get-Calls | Where-Object { $_.name -eq 'gh' -and ($_.args -join ' ') -like 'issue edit *' })
+        Assert ($claims.Count -eq 4) "$backend bug-fix loop ignores the ticket cap"
+    }
     Write-Host "ok - $script:checks Windows script checks passed"
 } finally {
     $env:PATH = $oldPath; $env:TMPDIR = $oldTmp

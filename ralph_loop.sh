@@ -46,13 +46,18 @@ Options:
   --use-branch BRANCH               Check out/create this branch
   --bug-hunt MODEL:EFFORT           Run tools/bug_hunt.sh after the main loop
                                     with the specified model and effort
+  --bug-hunt-implemented-only M:E   Run the bug hunt scoped to the commits and
+                                    tickets implemented by the initial ticket
+                                    loop; implies the hunt and is mutually
+                                    exclusive with --bug-hunt
   --fix-bugs                        After bug hunting, process its 'bug' tickets;
                                     also applies every --labels filter
   --initial-retry-interval-seconds N (default: 30)
   --max-retry-interval-seconds N     (default: 900)
   --usage-poll-seconds N             (default: 600)
-  --max-tickets N                   Complete at most N tickets across all loops
-                                    (positive integer; default: unlimited)
+  --max-tickets N                   Complete at most N tickets in the main loop
+                                    (the --fix-bugs loop is unlimited;
+                                    positive integer; default: unlimited)
   --once                            Process at most one ticket
   --dry-run                         List eligible tickets (up to --max-tickets) in the order the loop
                                     would process them, with difficulty, priority
@@ -71,8 +76,8 @@ verbose_log() { ((verbose)) && echo "verbose: $*"; return 0; }
 require_value() { [[ $# -ge 2 ]] || { echo "error: $1 requires a value" >&2; exit 2; }; }
 
 agent="" model="" effort="medium" repo="" ready_label="ready-for-agent" use_branch=""
-bug_hunt_model_spec="" bug_hunt_model="" bug_hunt_effort=""
-adaptive=0 once=0 dry_run=0 quiet=0 verbose=0 bug_hunt=0 fix_bugs=0
+bug_hunt_model_spec="" bug_hunt_model="" bug_hunt_effort="" bug_hunt_option=""
+adaptive=0 once=0 dry_run=0 quiet=0 verbose=0 bug_hunt=0 fix_bugs=0 bug_hunt_implemented_only=0
 # Track explicit --model/--effort separately: `effort` has a default, so its value
 # alone cannot tell "user asked for medium" from "nobody said".
 model_set=0 effort_set=0
@@ -81,6 +86,7 @@ max_tickets="" tickets_completed=0
 labels=()
 label_specs=()
 loop_labels=()
+implemented_tickets=()
 difficulty_override_specs=()
 declare -A difficulty_override_models difficulty_override_efforts
 while (($#)); do
@@ -98,7 +104,8 @@ while (($#)); do
             labels+=("${new_labels[@]}")
             shift 2 ;;
         --use-branch) require_value "$@"; use_branch=$2; shift 2 ;;
-        --bug-hunt) require_value "$@"; bug_hunt=1; bug_hunt_model_spec=$2; shift 2 ;;
+        --bug-hunt) require_value "$@"; bug_hunt=1; bug_hunt_option=--bug-hunt; bug_hunt_model_spec=$2; shift 2 ;;
+        --bug-hunt-implemented-only) require_value "$@"; bug_hunt_implemented_only=1; bug_hunt_option=--bug-hunt-implemented-only; bug_hunt_model_spec=$2; shift 2 ;;
         --fix-bugs) fix_bugs=1; shift ;;
         --initial-retry-interval-seconds) require_value "$@"; initial_retry=$2; shift 2 ;;
         --max-retry-interval-seconds) require_value "$@"; max_retry=$2; shift 2 ;;
@@ -149,12 +156,17 @@ if ((${#difficulty_override_specs[@]})); then
         fi
     done
 fi
+if ((bug_hunt && bug_hunt_implemented_only)); then
+    echo "error: --bug-hunt and --bug-hunt-implemented-only are mutually exclusive; the latter already enables the hunt, scoped to the implemented tickets" >&2
+    exit 2
+fi
+((bug_hunt_implemented_only)) && bug_hunt=1
 if ((bug_hunt)); then
     if [[ "$bug_hunt_model_spec" =~ ^(.+):(off|minimal|low|medium|high|xhigh|max)$ ]]; then
         bug_hunt_model=${BASH_REMATCH[1]}
         bug_hunt_effort=${BASH_REMATCH[2]}
     else
-        echo "error: --bug-hunt must be in the form MODEL:EFFORT, with a supported effort" >&2
+        echo "error: $bug_hunt_option must be in the form MODEL:EFFORT, with a supported effort" >&2
         exit 2
     fi
 fi
@@ -174,7 +186,7 @@ if [[ "$agent" == claude ]]; then
     done
 fi
 if ((fix_bugs && !bug_hunt)); then
-    warn "--fix-bugs has no effect without --bug-hunt."
+    warn "--fix-bugs has no effect without a bug hunt."
     fix_bugs=0
 fi
 
@@ -621,13 +633,16 @@ server_error_re='HTTP[[:space:]]*(408|409|425|429|5[0-9][0-9])|status[[:space:]]
 if ((dry_run)); then run_dry_run; exit 0; fi
 
 run_ticket_loop() {
-    local loop_name=$1
+    local loop_name=$1 cap_enforced=1
     shift
+    # `--unlimited` exempts a loop from --max-tickets: the post-hunt bug-fix loop
+    # processes every bug ticket the hunt filed instead of sharing the budget.
+    if [[ ${1:-} == --unlimited ]]; then cap_enforced=0; shift; fi
     loop_labels=("${labels[@]}" "$@")
     local -A finished_tickets=()
 
 while true; do
-    if ((max_tickets > 0 && tickets_completed >= max_tickets)); then
+    if ((cap_enforced && max_tickets > 0 && tickets_completed >= max_tickets)); then
         status "Maximum ticket count ($max_tickets) reached."
         break
     fi
@@ -679,6 +694,10 @@ while true; do
 
         if ticket_complete "$number"; then
             finished_tickets[$number]=1
+            # Global on purpose: with --bug-hunt-implemented-only the post-loop hunt
+            # scopes itself to these tickets. The hunt runs before the bug-fix loop,
+            # so at hunt time this holds exactly the initial loop's completions.
+            implemented_tickets+=("$number")
             status "Ticket #$number completed successfully."; break
         fi
         if ((agent_exit == 0)); then
@@ -721,26 +740,33 @@ done
 run_ticket_loop "initial"
 
 if ((bug_hunt)); then
-    bug_hunt_args=(
-        --agent "$agent"
-        --model "$bug_hunt_model"
-        --effort "$bug_hunt_effort"
-        --publish tracker
-    )
-    [[ -z "$use_branch" ]] || bug_hunt_args+=(--branch-only)
-    for label_spec in "${label_specs[@]}"; do
-        bug_hunt_args+=(--labels "$label_spec")
-    done
-    status "Starting post-loop bug hunt with $bug_hunt_model at $bug_hunt_effort effort."
-    "$repo_root/tools/bug_hunt.sh" "${bug_hunt_args[@]}"
-    bug_hunt_result=$?
-    if ((bug_hunt_result != 0)); then
-        ((fix_bugs)) && die "Bug hunt failed; bug-fix loop will not start."
-        exit "$bug_hunt_result"
-    fi
+    if ((bug_hunt_implemented_only && ${#implemented_tickets[@]} == 0)); then
+        status "No tickets were implemented by the initial loop; skipping the scoped bug hunt."
+    else
+        bug_hunt_args=(
+            --agent "$agent"
+            --model "$bug_hunt_model"
+            --effort "$bug_hunt_effort"
+            --publish tracker
+        )
+        [[ -z "$use_branch" ]] || bug_hunt_args+=(--branch-only)
+        if ((bug_hunt_implemented_only)); then
+            bug_hunt_args+=(--tickets "$(IFS=,; echo "${implemented_tickets[*]}")")
+        fi
+        for label_spec in "${label_specs[@]}"; do
+            bug_hunt_args+=(--labels "$label_spec")
+        done
+        status "Starting post-loop bug hunt with $bug_hunt_model at $bug_hunt_effort effort."
+        "$repo_root/tools/bug_hunt.sh" "${bug_hunt_args[@]}"
+        bug_hunt_result=$?
+        if ((bug_hunt_result != 0)); then
+            ((fix_bugs)) && die "Bug hunt failed; bug-fix loop will not start."
+            exit "$bug_hunt_result"
+        fi
 
-    if ((fix_bugs)); then
-        status "Starting post-hunt bug-fix loop."
-        run_ticket_loop "post-hunt bug-fix" bug
+        if ((fix_bugs)); then
+            status "Starting post-hunt bug-fix loop."
+            run_ticket_loop "post-hunt bug-fix" --unlimited bug
+        fi
     fi
 fi
