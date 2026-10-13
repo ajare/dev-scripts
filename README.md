@@ -71,11 +71,15 @@ must be a positive integer (1–2147483647).
 
 The cap applies only to the initial loop. The post-hunt bug-fix loop ignores it
 and processes every bug ticket it can find. Retries and skipped closed tickets
-do not count. Bug hunting still runs if requested; `--once` (`/once`) retains
-its one-ticket-per-loop behavior, subject to the cap in the initial loop.
-Dry-run lists at most the specified number of tickets in processing order
-without running them. Once the cap is reached, remaining tickets are not listed
-or reported as stranded.
+do not count. Sub-issues count with their parent as one ticket: an issue that
+declares a parent via a `## Parent` body section (see `pre_ralph_validate`)
+continues the parent's in-flight work, so the whole chain counts once and the
+cap never stops the loop mid-parent. Bug hunting still runs if requested;
+`--once` (`/once`) retains its one-ticket-per-loop behavior, subject to the cap
+in the initial loop. Dry-run lists at most the specified number of tickets in
+processing order without running them, grouping sub-issues under their parent
+and excluding parent specification issues like the live loop. Once the cap is
+reached, remaining tickets are not listed or reported as stranded.
 
 ### Ticket-scoped bug hunts
 

@@ -28,12 +28,14 @@ Options:
   /max-retry-interval-seconds N      (default: 900)
   /usage-poll-seconds N              (default: 600)
   /max-tickets N                    Complete at most N tickets in the main loop
-                                     (the /fix-bugs loop is unlimited;
+                                     (the /fix-bugs loop is unlimited; a parent
+                                     and its sub-issues count as one ticket;
                                      positive integer; default: unlimited)
   /once                             Process at most one ticket
   /dry-run                          List eligible tickets in processing order with
-                                     difficulty, priority, model/effort, up to /max-tickets.
-                                     Claims/runs nothing.
+                                     difficulty, priority, model/effort, up to
+                                     /max-tickets (a parent chain counts as one
+                                     ticket). Claims/runs nothing.
   /quiet                            Suppress routine and agent output
   /verbose                          Enable loop and agent diagnostics
   /help
@@ -202,6 +204,7 @@ query($q: String!) {
         number
         title
         url
+        body
         labels(first: 20) { nodes { name } }
         assignees(first: 10) { nodes { login } }
         blockedBy(first: 50) { nodes { number state } }
@@ -219,20 +222,30 @@ function Invoke-DryRun {
     $data = Invoke-GhJson @('api', 'graphql', '--input', '-') $payload
     $nodes = @($data.data.search.nodes)
     if (!$nodes.Count) { Write-Host "No open tickets match: $searchQuery"; return }
-    $nodeOf = @{}; $blockersOf = @{}; $completed = @{}
+    $nodeOf = @{}; $blockersOf = @{}; $completed = @{}; $parentOf = @{}; $specs = @{}
     foreach ($node in $nodes) {
         $n = [long]$node.number
         $nodeOf[$n] = [pscustomobject]@{ number = $n; title = $node.title; url = $node.url; labels = @($node.labels.nodes); assignees = @($node.assignees.nodes) }
         $blockersOf[$n] = @($node.blockedBy.nodes | Where-Object { $_.state -ceq 'OPEN' } | ForEach-Object { [long]$_.number })
+        $parentOf[$n] = Get-ParentNumber $node
     }
+    # Parent specification issues are never selected by the live loop either.
+    foreach ($n in @($parentOf.Keys)) { if ($parentOf[$n]) { $specs[[long]$parentOf[$n]] = $true } }
+    $ignored = 0
+    foreach ($n in @($nodeOf.Keys)) { if ($specs.ContainsKey($n)) { $nodeOf.Remove($n); $ignored++ } }
     Write-Host "Dry run - $agent, filter: $searchQuery"
+    if ($ignored) { Write-Host "$ignored parent specification issue(s) ignored." }
     if ($adaptive) { Write-Host 'Model/effort: adaptive from the difficulty label.' }
     else { Write-Host "Model/effort: fixed at '$model' / '$effort' (pass /adaptive-model-and-effort to vary by difficulty)." }
     if ($overrideSpecs.Count) { Write-Host "Difficulty overrides: $($overrideSpecs -join ' ')." }
     Write-Host ''
     $format = '{0,-6} {1,-8} {2,-11} {3,-10} {4,-28} {5,-8} {6}'
     Write-Host ($format -f 'Order', 'Ticket', 'Difficulty', 'Priority', 'Model', 'Effort', 'Selection source')
+    # Simulate the loop: the cap mirrors the live loop by counting parent groups,
+    # so a sub-issue of an already-counted parent neither stops the preview nor
+    # consumes a new slot.
     $processed = 0
+    $countedGroups = @{}
     while ($true) {
         $best = $null; $bestKey = ''
         foreach ($n in $nodeOf.Keys) {
@@ -244,20 +257,28 @@ function Invoke-DryRun {
             $key = Get-Ranking $issue
             if (!$bestKey -or [string]::CompareOrdinal($key, $bestKey) -lt 0) { $bestKey = $key; $best = $n }
         }
-        if ($null -eq $best) { break }
-        $processed++; $completed[$best] = $true
-        $selection = Get-Selection $nodeOf[$best] -Preview
-        Write-Host ($format -f $processed, "#$best", (@(Get-Difficulties $nodeOf[$best]) -join ','), (Get-PriorityLabel $nodeOf[$best]), $selection.Model, $selection.Effort, $selection.Source)
-        if ($maxTickets -gt 0 -and $processed -ge $maxTickets) {
+        if ($null -eq $best) {
+            if ($maxTickets -gt 0 -and $countedGroups.Count -ge $maxTickets) {
+                Write-Host ''
+                Write-Host "Maximum ticket count ($maxTickets) reached."
+                return
+            }
+            break
+        }
+        $group = if ($parentOf[$best]) { [long]$parentOf[$best] } else { $best }
+        if ($maxTickets -gt 0 -and !$countedGroups.ContainsKey($group) -and $countedGroups.Count -ge $maxTickets) {
             Write-Host ''
             Write-Host "Maximum ticket count ($maxTickets) reached."
             return
         }
+        $processed++; $completed[$best] = $true; $countedGroups[$group] = $true
+        $selection = Get-Selection $nodeOf[$best] -Preview
+        Write-Host ($format -f $processed, "#$best", (@(Get-Difficulties $nodeOf[$best]) -join ','), (Get-PriorityLabel $nodeOf[$best]), $selection.Model, $selection.Effort, $selection.Source)
     }
     $stranded = @($nodeOf.Keys | Where-Object { !$completed.ContainsKey($_) } | Sort-Object)
     Write-Host ''
-    if (!$stranded.Count) { Write-Host "All $($nodes.Count) eligible tickets are runnable. Nothing stranded."; return }
-    Write-Host "Not runnable by this loop ($($stranded.Count) of $($nodes.Count)):"
+    if (!$stranded.Count) { Write-Host "All $($nodeOf.Count) eligible tickets are runnable. Nothing stranded."; return }
+    Write-Host "Not runnable by this loop ($($stranded.Count) of $($nodeOf.Count)):"
     foreach ($n in $stranded) {
         $reasons = @(); $assignees = @(Get-Assignees $nodeOf[$n])
         if ($assignees.Count -gt 0 -and $currentUser -cnotin $assignees) { $reasons += "assigned to $($assignees -join ', '), not $currentUser" }
@@ -289,7 +310,9 @@ Repository instructions and ticket acceptance criteria take precedence; staging 
 
 Ensure that all tests are headless and there are no dialog boxes or anything that may block non-interactive automation.
 
-When the ticket is fully implemented and verified:
+Before considering the ticket complete, bug-check your own work: re-review the final changes for defects, edge cases, error paths, and regressions they may introduce, and run the focused checks that would expose them. Resolve every issue you find and re-run the affected validation so the evidence still matches the final source state.
+
+When the ticket is fully implemented, verified, and bug-checked:
 1. Commit all tracked changes on the current branch with a message referencing #$($issue.number).
 2. Close #$($issue.number) with a concise comment containing the commit hash and validation performed.
 3. Finish with a concise implementation summary.
@@ -417,15 +440,27 @@ $usageErrorPattern = 'usage limit|usage_limit_reached|usage cap|quota exceeded|i
 $serverErrorPattern = 'HTTP\s*(408|409|425|429|5[0-9][0-9])|status\s*(408|409|425|429|5[0-9][0-9])|server error|internal server error|service unavailable|bad gateway|gateway timeout|overloaded|temporarily unavailable|request timeout|timed out|ECONNRESET|ECONNREFUSED|ENETUNREACH|EAI_AGAIN|socket hang up|connection reset|connection closed|fetch failed|network error|server_error|stream.*(closed|terminated)'
 function Invoke-TicketLoop([string] $LoopName, [string[]] $ExtraLabels = @(), [switch] $Unlimited) {
     $loopLabels = @($labels) + $ExtraLabels
-    $finishedTickets = @{}
+    $finishedTickets = @{}; $countedGroups = @{}
     while ($true) {
-        if (!$Unlimited -and $maxTickets -gt 0 -and $script:ticketsCompleted -ge $maxTickets) {
+        $ticket = Get-NextTicket $loopLabels
+        if (!$ticket) {
+            if (!$Unlimited -and $maxTickets -gt 0 -and $script:ticketsCompleted -ge $maxTickets) {
+                Write-Status "Maximum ticket count ($maxTickets) reached."
+            } else {
+                Write-Status "No unblocked, unclaimed '$readyLabel' tickets are available for the $LoopName loop."
+            }
+            break
+        }
+        $number = $ticket.number
+        $ticketParent = Get-ParentNumber $ticket
+        # Sub-issues continue their parent's in-flight work: they do not consume a
+        # new ticket slot, and the cap never stops the loop mid-parent. Only a
+        # selected ticket that starts a new parent/ticket group is blocked by the cap.
+        $group = if ($ticketParent) { [long]$ticketParent } else { [long]$number }
+        if (!$Unlimited -and $maxTickets -gt 0 -and $script:ticketsCompleted -ge $maxTickets -and !$countedGroups.ContainsKey($group)) {
             Write-Status "Maximum ticket count ($maxTickets) reached."
             break
         }
-        $ticket = Get-NextTicket $loopLabels
-        if (!$ticket) { Write-Status "No unblocked, unclaimed '$readyLabel' tickets are available for the $LoopName loop."; break }
-        $number = $ticket.number
         # GitHub search can lag closure; do not claim or launch a closed ticket.
         $state = Invoke-Checked gh @('issue', 'view', "$number", '--repo', $repo, '--json', 'state', '--jq', '.state')
         if ($state.Trim() -ceq 'CLOSED') {
@@ -499,7 +534,9 @@ Determine why that attempt did not complete the original request, then resolve t
             }
             Stop-Script "$agent failed for a non-retryable implementation reason on #$number. The issue remains assigned and open. Inspect $logPath."
         }
-        $script:ticketsCompleted++
+        # A parent and all of its sub-issues count as one ticket toward /max-tickets:
+        # only the first completion in a parent group consumes a slot.
+        if (!$countedGroups.ContainsKey($group)) { $countedGroups[$group] = $true; $script:ticketsCompleted++ }
         $ended = [DateTimeOffset]::Now
         if ($agent -eq 'pi') { $usageSource = $ticketSessionDirectory; $usage = Get-SessionUsage pi @($ticketSessionDirectory) }
         else { $usageSource = "Claude Code sessions $($sessionIds -join ' ')"; $usage = Get-SessionUsage claude $sessionIds }

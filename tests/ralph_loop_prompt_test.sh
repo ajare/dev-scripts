@@ -74,6 +74,8 @@ assert_policy() {
     assert_contains "$prompt" 'Validation evidence must match the final source state:'
     assert_contains "$prompt" 'invalidate and rerun the relevant coverage; do not treat an earlier pass as final verification'
     assert_contains "$prompt" 'Ensure that all tests are headless'
+    assert_contains "$prompt" 'Before considering the ticket complete, bug-check your own work'
+    assert_contains "$prompt" 'Resolve every issue you find and re-run the affected validation'
     assert_contains "$prompt" 'Preserve unrelated and pre-existing untracked files'
     assert_contains "$prompt" 'Close #10 with a concise comment containing the commit hash and validation performed'
     assert_contains "$prompt" 'leave the issue open, do not commit partial work'

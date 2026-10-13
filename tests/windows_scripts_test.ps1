@@ -25,6 +25,7 @@ function Assert-StagedValidation([string] $Prompt) {
     Assert ($Prompt -match '2\. Feature milestones:' -and $Prompt -match 'affected modules and relevant integration/contract coverage' -and $Prompt -match 'Broaden validation when shared code or cross-module dependencies warrant it') 'milestone validation'
     Assert ($Prompt -match '3\. Before completion: perform the repository-required full validation matrix on the final source state' -and $Prompt -match 'one successful final validation pass per required configuration') 'required final validation'
     Assert ($Prompt -match 'Validation evidence must match the final source state:' -and $Prompt -match 'invalidate and rerun the relevant coverage; do not treat an earlier pass as final verification') 'final-source-state evidence'
+    Assert ($Prompt -match 'Before considering the ticket complete, bug-check your own work' -and $Prompt -match 'Resolve every issue you find and re-run the affected validation') 'self bug-check before completion'
 }
 function Run-Script([string] $Name, [string[]] $Tokens) {
     Invoke-Native $engine (@('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $root "$Name.ps1")) + $Tokens)
@@ -35,7 +36,7 @@ function New-Issue([int] $Number, [string[]] $Labels = @('ready-for-agent', 'dif
        labels = @($Labels | ForEach-Object { @{ name = $_ } }); assignees = @($Assignees | ForEach-Object { @{ login = $_ } }); comments = @() }
 }
 function New-Node($Issue, $Blockers = @()) {
-    @{ number = $Issue.number; title = $Issue.title; url = $Issue.url
+    @{ number = $Issue.number; title = $Issue.title; url = $Issue.url; body = $Issue.body
        labels = @{ nodes = $Issue.labels }; assignees = @{ nodes = $Issue.assignees }; blockedBy = @{ nodes = @($Blockers) } }
 }
 try {
@@ -177,6 +178,29 @@ public class Stub {
         Set-Fixture @{ issues = @((New-Issue 1), (New-Issue 2)); ticket = (New-Issue 1); sequentialTickets = $true }
         $r = Run-Script ralph_loop @('/agent', $backend, '/repo', 'owner/repo', '/max-tickets', '2', '/once', '/quiet')
         Assert ($r.Code -eq 0 -and (Get-Content -LiteralPath (Join-Path $temp 'agent-count')) -eq 2) 'once remains more restrictive than ticket cap'
+
+        # Sub-issues share their parent's ticket count: the whole parent chain runs
+        # as one ticket, and the cap stops before the next standalone ticket.
+        Set-Fixture @{ issues = @(
+            (New-Issue 1),
+            (New-Issue 2 @('ready-for-agent') @() "## Parent`n#1"),
+            (New-Issue 3 @('ready-for-agent') @() "## Parent`n#1"),
+            (New-Issue 4 @('ready-for-agent'))
+        ); ticket = (New-Issue 2 @('ready-for-agent') @() "## Parent`n#1"); sequentialTickets = $true }
+        $r = Run-Script ralph_loop @('/agent', $backend, '/repo', 'owner/repo', '/max-tickets', '1', '/quiet')
+        Assert ($r.Code -eq 0) "$backend sub-issue cap: $($r.ErrorText) $($r.Text)"
+        $claims = @(Get-Calls | Where-Object { $_.name -eq 'gh' -and ($_.args -join ' ') -like 'issue edit *' })
+        Assert (($claims | ForEach-Object { $_.args[2] }) -join ',' -eq '2,3') "$backend cap 1 runs the whole parent chain but stops before the standalone ticket"
+        Set-Fixture @{ issues = @(
+            (New-Issue 1),
+            (New-Issue 2 @('ready-for-agent') @() "## Parent`n#1"),
+            (New-Issue 3 @('ready-for-agent') @() "## Parent`n#1"),
+            (New-Issue 4 @('ready-for-agent'))
+        ); ticket = (New-Issue 2 @('ready-for-agent') @() "## Parent`n#1"); sequentialTickets = $true }
+        $r = Run-Script ralph_loop @('/agent', $backend, '/repo', 'owner/repo', '/max-tickets', '2', '/quiet')
+        Assert ($r.Code -eq 0) "$backend sub-issue cap 2: $($r.ErrorText) $($r.Text)"
+        $claims = @(Get-Calls | Where-Object { $_.name -eq 'gh' -and ($_.args -join ' ') -like 'issue edit *' })
+        Assert (($claims | ForEach-Object { $_.args[2] }) -join ',' -eq '2,3,4') "$backend cap 2 fills the second slot with the standalone ticket"
     }
 
     $ten = New-Issue 10
@@ -216,6 +240,27 @@ public class Stub {
         }
     }
     Assert (@(Get-Calls | Where-Object { $_.name -in @('pi', 'claude') -or ($_.args -contains 'edit') -or ($_.args -contains 'checkout') }).Count -eq 0) 'capped dry run never mutates or runs agents'
+
+    # Sub-issues count with their parent as one ticket; parent specification issues are ignored.
+    $spec = New-Issue 1
+    $subOne = New-Issue 2 @('ready-for-agent') @() "## Parent`n#1"
+    $subTwo = New-Issue 3 @('ready-for-agent') @() "## Parent`n#1"
+    $standalone = New-Issue 4
+    Set-Fixture @{ nodes = @(
+        (New-Node $spec),
+        (New-Node $subOne),
+        (New-Node $subTwo @(@{ number = 2; state = 'OPEN' })),
+        (New-Node $standalone)
+    ) }
+    $r = Run-Script ralph_loop @('/agent', 'pi', '/repo', 'owner/repo', '/dry-run')
+    Assert ($r.Code -eq 0) "sub-issue dry run: $($r.ErrorText) $($r.Text)"
+    Assert ($r.Text -match '1 parent specification issue\(s\) ignored') 'parent specification note'
+    Assert ($r.Text -match '(?m)^1 +#2 ' -and $r.Text -match '(?m)^2 +#3 ' -and $r.Text -match '(?m)^3 +#4 ') 'sub-issue chain order'
+    Assert ($r.Text -match 'All 3 eligible tickets are runnable') 'parent specification excluded from the total'
+    Assert ($r.Text -notmatch '(?m)^[0-9]+ +#1 ') 'parent specification never listed as a ticket'
+    $r = Run-Script ralph_loop @('/agent', 'pi', '/repo', 'owner/repo', '/dry-run', '/max-tickets', '1')
+    Assert ($r.Code -eq 0 -and [regex]::Matches($r.Text, '(?m)^[0-9]+ +#[0-9]+ ').Count -eq 2) 'sub-issues of a counted parent consume no extra cap slots'
+    Assert ($r.Text -match 'Maximum ticket count \(1\) reached' -and $r.Text -notmatch '#4 |Not runnable') 'cap stops before the standalone ticket'
 
     Set-Fixture @{ nodes = @((New-Node (New-Issue 1 @('difficulty:hard', 'difficulty:easy'))), (New-Node (New-Issue 2 @('ready-for-agent')))) }
     $r = Run-Script ralph_loop @('/agent', 'claude', '/dry-run', '/adaptive-model-and-effort')

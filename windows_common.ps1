@@ -223,3 +223,7 @@ function Get-ParentNumbers($Issues) {
         if ((Get-Field $issue 'body' '') -match '(?im)^## Parent\s*\r?\n+\s*#(?<number>[0-9]+)') { [int]$Matches.number }
     }
 }
+function Get-ParentNumber($Issue) {
+    if ((Get-Field $issue 'body' '') -match '(?im)^## Parent\s*\r?\n+\s*#(?<number>[0-9]+)') { return [long]$Matches.number }
+    return $null
+}

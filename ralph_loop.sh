@@ -56,11 +56,14 @@ Options:
   --max-retry-interval-seconds N     (default: 900)
   --usage-poll-seconds N             (default: 600)
   --max-tickets N                   Complete at most N tickets in the main loop
-                                    (the --fix-bugs loop is unlimited;
+                                    (the --fix-bugs loop is unlimited; a parent
+                                    and its sub-issues count as one ticket;
                                     positive integer; default: unlimited)
   --once                            Process at most one ticket
-  --dry-run                         List eligible tickets (up to --max-tickets) in the order the loop
-                                    would process them, with difficulty, priority
+  --dry-run                         List eligible tickets in the order the loop
+                                    would process them (up to --max-tickets,
+                                    counting a parent chain as one ticket),
+                                    with difficulty, priority
                                     and the model/effort that would be chosen.
                                     Claims and runs nothing.
   --quiet                           Suppress routine and agent output
@@ -232,6 +235,13 @@ priority_of() {
         else 100 end] | min // 100'
 }
 
+# Parent issue number declared by a sub-issue's "## Parent" body section
+# ("" when the issue is standalone). The same convention pre_ralph_validate
+# uses to ignore parent specification issues.
+parent_of_issue() {
+    jq -r '.body // "" | capture("(?im)^## Parent\\s*\\r?\\n+\\s*#(?<n>[0-9]+)").n // empty' <<<"$1"
+}
+
 get_next_ticket() {
     local args=(issue list --repo "$repo" --state open --label "$ready_label") extra json parents issue number assignee_count assigned blocked rank priority
     for extra in "${loop_labels[@]}"; do [[ -n "$extra" ]] && args+=(--label "$extra"); done
@@ -344,6 +354,7 @@ DRY_RUN_QUERY='query($q: String!) {
         number
         title
         url
+        body
         labels(first: 20) { nodes { name } }
         assignees(first: 10) { nodes { login } }
         blockedBy(first: 50) { nodes { number state } }
@@ -397,8 +408,8 @@ run_dry_run() {
         return 0
     fi
 
-    declare -A node_of blockers_of completed_of
-    local node n
+    declare -A node_of blockers_of completed_of parent_of spec_of
+    local node n ignored=0
     while IFS= read -r node; do
         n=$(jq -r .number <<<"$node")
         # Flatten the GraphQL connections into the shape `gh issue list --json` uses,
@@ -407,9 +418,20 @@ run_dry_run() {
             labels: (.labels.nodes // []),
             assignees: (.assignees.nodes // [])}' <<<"$node")
         blockers_of[$n]=$(jq -r '[.blockedBy.nodes[] | select(.state == "OPEN") | .number] | map(tostring) | join(" ")' <<<"$node")
+        parent_of[$n]=$(parent_of_issue "$node")
     done < <(jq -c '.data.search.nodes[]' <<<"$data")
 
+    # Parent specification issues are never selected by the live loop either.
+    for n in "${!parent_of[@]}"; do
+        [[ -n "${parent_of[$n]}" ]] && spec_of[${parent_of[$n]}]=1
+    done
+    for n in "${!node_of[@]}"; do
+        [[ -n "${spec_of[$n]:-}" ]] && { unset 'node_of[$n]'; ((++ignored)); }
+    done
+    total=${#node_of[@]}
+
     echo "Dry run - $agent, filter: $search_query"
+    ((ignored > 0)) && echo "$ignored parent specification issue(s) ignored."
     if ((adaptive)); then
         echo "Model/effort: adaptive from the difficulty label."
     else
@@ -422,9 +444,12 @@ run_dry_run() {
 
     # Simulate the loop: repeatedly take the best unblocked ticket and mark it done,
     # which is what unblocks its dependents. Same ranking key as get_next_ticket.
+    # The cap mirrors the live loop: it counts parent groups, so a sub-issue of an
+    # already-counted parent neither stops the preview nor consumes a new slot.
     local processed=0
+    declare -A counted_groups=()
     while :; do
-        local best="" best_key=""
+        local best="" best_key="" group
         for n in "${!node_of[@]}"; do
             [[ -n "${completed_of[$n]:-}" ]] && continue
             local issue="${node_of[$n]}" assignee_count assigned
@@ -442,18 +467,27 @@ run_dry_run() {
             printf -v key '%d:%010d:%010d' "$rank" "$priority" "$n"
             if [[ -z "$best_key" || "$key" < "$best_key" ]]; then best_key=$key; best=$n; fi
         done
-        [[ -n "$best" ]] || break
-        ((++processed))
-        completed_of[$best]=1
-        dry_run_selection "${node_of[$best]}"
-        printf '%-6s %-8s %-11s %-10s %-28s %-8s %s\n' \
-            "$processed" "#$best" "$(difficulty_of "${node_of[$best]}")" \
-            "$(priority_label_of "${node_of[$best]}")" "$ticket_model" "$ticket_effort" "$selection_source"
-        if ((max_tickets > 0 && processed >= max_tickets)); then
+        if [[ -z "$best" ]]; then
+            if ((max_tickets > 0 && ${#counted_groups[@]} >= max_tickets)); then
+                echo
+                echo "Maximum ticket count ($max_tickets) reached."
+                return 0
+            fi
+            break
+        fi
+        group=${parent_of[$best]:-$best}
+        if ((max_tickets > 0)) && [[ -z "${counted_groups[$group]:-}" && ${#counted_groups[@]} -ge max_tickets ]]; then
             echo
             echo "Maximum ticket count ($max_tickets) reached."
             return 0
         fi
+        ((++processed))
+        completed_of[$best]=1
+        counted_groups[$group]=1
+        dry_run_selection "${node_of[$best]}"
+        printf '%-6s %-8s %-11s %-10s %-28s %-8s %s\n' \
+            "$processed" "#$best" "$(difficulty_of "${node_of[$best]}")" \
+            "$(priority_label_of "${node_of[$best]}")" "$ticket_model" "$ticket_effort" "$selection_source"
     done
 
     # Anything never reached: owned by someone else, or blocked by something that
@@ -511,7 +545,9 @@ Repository instructions and ticket acceptance criteria take precedence; staging 
 
 Ensure that all tests are headless and there are no dialog boxes or anything that may block non-interactive automation.
 
-When the ticket is fully implemented and verified:
+Before considering the ticket complete, bug-check your own work: re-review the final changes for defects, edge cases, error paths, and regressions they may introduce, and run the focused checks that would expose them. Resolve every issue you find and re-run the affected validation so the evidence still matches the final source state.
+
+When the ticket is fully implemented, verified, and bug-checked:
 1. Commit all tracked changes on the current branch with a message referencing #$(jq -r .number <<<"$issue").
 2. Close #$(jq -r .number <<<"$issue") with a concise comment containing the commit hash and validation performed.
 3. Finish with a concise implementation summary.
@@ -639,17 +675,30 @@ run_ticket_loop() {
     # processes every bug ticket the hunt filed instead of sharing the budget.
     if [[ ${1:-} == --unlimited ]]; then cap_enforced=0; shift; fi
     loop_labels=("${labels[@]}" "$@")
-    local -A finished_tickets=()
+    local -A finished_tickets=() counted_groups=()
 
 while true; do
-    if ((cap_enforced && max_tickets > 0 && tickets_completed >= max_tickets)); then
+    ticket=$(get_next_ticket); ticket_result=$?
+    ((ticket_result != 2)) || die "Failed to query eligible tickets."
+    if ((ticket_result == 1)); then
+        if ((cap_enforced && max_tickets > 0 && tickets_completed >= max_tickets)); then
+            status "Maximum ticket count ($max_tickets) reached."
+        else
+            status "No unblocked, unclaimed '$ready_label' tickets are available for the $loop_name loop."
+        fi
+        break
+    fi
+    number=$(jq -r .number <<<"$ticket"); title=$(jq -r .title <<<"$ticket")
+    ticket_parent=$(parent_of_issue "$ticket")
+    # Sub-issues continue their parent's in-flight work: they do not consume a new
+    # ticket slot, and the cap never stops the loop mid-parent. Only a selected
+    # ticket that starts a new parent/ticket group is blocked by the cap.
+    ticket_group=$ticket_parent
+    [[ -n "$ticket_group" ]] || ticket_group=$number
+    if ((cap_enforced && max_tickets > 0 && tickets_completed >= max_tickets)) && [[ -z "${counted_groups[$ticket_group]:-}" ]]; then
         status "Maximum ticket count ($max_tickets) reached."
         break
     fi
-    ticket=$(get_next_ticket); ticket_result=$?
-    ((ticket_result != 2)) || die "Failed to query eligible tickets."
-    if ((ticket_result == 1)); then status "No unblocked, unclaimed '$ready_label' tickets are available for the $loop_name loop."; break; fi
-    number=$(jq -r .number <<<"$ticket"); title=$(jq -r .title <<<"$ticket")
     # Search results can lag issue closure. Recheck before claiming or launching,
     # and remember closed tickets so a stale listing cannot select them forever.
     state=$(gh issue view "$number" --repo "$repo" --json state --jq .state) || die "Failed to query state for #$number."
@@ -727,7 +776,12 @@ EOF
         die "$agent failed for a non-retryable implementation reason on #$number. The issue remains assigned and open. Inspect $log_path."
     done
 
-    ((++tickets_completed))
+    # A parent and all of its sub-issues count as one ticket toward --max-tickets:
+    # only the first completion in a parent group consumes a slot.
+    if [[ -z "${counted_groups[$ticket_group]:-}" ]]; then
+        counted_groups[$ticket_group]=1
+        ((++tickets_completed))
+    fi
     ticket_ended=$(date +%s)
     if [[ "$agent" == pi ]]; then usage_source=$ticket_session_directory; usage=$(session_usage pi "$ticket_session_directory" || true)
     else usage_source="Claude Code sessions ${session_ids[*]}"; ids=$(IFS=,; echo "${session_ids[*]}"); usage=$(session_usage claude "$ids" || true); fi
