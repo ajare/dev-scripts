@@ -65,13 +65,13 @@ Options:
   --max-retry-interval-seconds N     (default: 900)
   --usage-poll-seconds N             (default: 600)
   --max-tickets N                   Complete at most N tickets in the main loop
-                                    (the --fix-bugs loop is unlimited; a parent
-                                    and its sub-issues count as one ticket;
+                                    (the --fix-bugs loop is unlimited;
+                                    each sub-issue counts as a separate ticket;
                                     positive integer; default: unlimited)
   --once                            Process at most one ticket
   --dry-run                         List eligible tickets in the order the loop
                                     would process them (up to --max-tickets,
-                                    counting a parent chain as one ticket),
+                                    counting each sub-issue separately),
                                     with difficulty, priority
                                     and the model/effort that would be chosen.
                                     Claims and runs nothing.
@@ -453,12 +453,10 @@ run_dry_run() {
 
     # Simulate the loop: repeatedly take the best unblocked ticket and mark it done,
     # which is what unblocks its dependents. Same ranking key as get_next_ticket.
-    # The cap mirrors the live loop: it counts parent groups, so a sub-issue of an
-    # already-counted parent neither stops the preview nor consumes a new slot.
+    # Each selected issue, including a sub-issue, consumes one cap slot.
     local processed=0
-    declare -A counted_groups=()
     while :; do
-        local best="" best_key="" group
+        local best="" best_key=""
         for n in "${!node_of[@]}"; do
             [[ -n "${completed_of[$n]:-}" ]] && continue
             local issue="${node_of[$n]}" assignee_count assigned
@@ -477,22 +475,20 @@ run_dry_run() {
             if [[ -z "$best_key" || "$key" < "$best_key" ]]; then best_key=$key; best=$n; fi
         done
         if [[ -z "$best" ]]; then
-            if ((max_tickets > 0 && ${#counted_groups[@]} >= max_tickets)); then
+            if ((max_tickets > 0 && processed >= max_tickets)); then
                 echo
                 echo "Maximum ticket count ($max_tickets) reached."
                 return 0
             fi
             break
         fi
-        group=${parent_of[$best]:-$best}
-        if ((max_tickets > 0)) && [[ -z "${counted_groups[$group]:-}" && ${#counted_groups[@]} -ge max_tickets ]]; then
+        if ((max_tickets > 0 && processed >= max_tickets)); then
             echo
             echo "Maximum ticket count ($max_tickets) reached."
             return 0
         fi
         ((++processed))
         completed_of[$best]=1
-        counted_groups[$group]=1
         dry_run_selection "${node_of[$best]}"
         printf '%-6s %-8s %-11s %-10s %-28s %-8s %s\n' \
             "$processed" "#$best" "$(difficulty_of "${node_of[$best]}")" \
@@ -684,7 +680,7 @@ run_ticket_loop() {
     # processes every bug ticket the hunt filed instead of sharing the budget.
     if [[ ${1:-} == --unlimited ]]; then cap_enforced=0; shift; fi
     loop_labels=("${labels[@]}" "$@")
-    local -A finished_tickets=() counted_groups=()
+    local -A finished_tickets=()
 
 while true; do
     ticket=$(get_next_ticket); ticket_result=$?
@@ -698,13 +694,7 @@ while true; do
         break
     fi
     number=$(jq -r .number <<<"$ticket"); title=$(jq -r .title <<<"$ticket")
-    ticket_parent=$(parent_of_issue "$ticket")
-    # Sub-issues continue their parent's in-flight work: they do not consume a new
-    # ticket slot, and the cap never stops the loop mid-parent. Only a selected
-    # ticket that starts a new parent/ticket group is blocked by the cap.
-    ticket_group=$ticket_parent
-    [[ -n "$ticket_group" ]] || ticket_group=$number
-    if ((cap_enforced && max_tickets > 0 && tickets_completed >= max_tickets)) && [[ -z "${counted_groups[$ticket_group]:-}" ]]; then
+    if ((cap_enforced && max_tickets > 0 && tickets_completed >= max_tickets)); then
         status "Maximum ticket count ($max_tickets) reached."
         break
     fi
@@ -785,12 +775,8 @@ EOF
         die "$agent failed for a non-retryable implementation reason on #$number. The issue remains assigned and open. Inspect $log_path."
     done
 
-    # A parent and all of its sub-issues count as one ticket toward --max-tickets:
-    # only the first completion in a parent group consumes a slot.
-    if [[ -z "${counted_groups[$ticket_group]:-}" ]]; then
-        counted_groups[$ticket_group]=1
-        ((++tickets_completed))
-    fi
+    # Count each successful issue completion, including each sub-issue, once.
+    ((++tickets_completed))
     ticket_ended=$(date +%s)
     if [[ "$agent" == pi ]]; then usage_source=$ticket_session_directory; usage=$(session_usage pi "$ticket_session_directory" || true)
     else usage_source="Claude Code sessions ${session_ids[*]}"; ids=$(IFS=,; echo "${session_ids[*]}"); usage=$(session_usage claude "$ids" || true); fi

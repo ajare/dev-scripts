@@ -30,14 +30,14 @@ Options:
   /max-retry-interval-seconds N      (default: 900)
   /usage-poll-seconds N              (default: 600)
   /max-tickets N                    Complete at most N tickets in the main loop
-                                     (the /fix-bugs loop is unlimited; a parent
-                                     and its sub-issues count as one ticket;
+                                     (the /fix-bugs loop is unlimited;
+                                     each sub-issue counts as a separate ticket;
                                      positive integer; default: unlimited)
   /once                             Process at most one ticket
   /dry-run                          List eligible tickets in processing order with
                                      difficulty, priority, model/effort, up to
-                                     /max-tickets (a parent chain counts as one
-                                     ticket). Claims/runs nothing.
+                                     /max-tickets (each sub-issue counts separately).
+                                     Claims/runs nothing.
   /quiet                            Suppress routine and agent output
   /verbose                          Enable loop and agent diagnostics
   /help
@@ -265,11 +265,8 @@ function Invoke-DryRun {
     Write-Host ''
     $format = '{0,-6} {1,-8} {2,-11} {3,-10} {4,-28} {5,-8} {6}'
     Write-Host ($format -f 'Order', 'Ticket', 'Difficulty', 'Priority', 'Model', 'Effort', 'Selection source')
-    # Simulate the loop: the cap mirrors the live loop by counting parent groups,
-    # so a sub-issue of an already-counted parent neither stops the preview nor
-    # consumes a new slot.
+    # Each selected issue, including a sub-issue, consumes one cap slot.
     $processed = 0
-    $countedGroups = @{}
     while ($true) {
         $best = $null; $bestKey = ''
         foreach ($n in $nodeOf.Keys) {
@@ -282,20 +279,19 @@ function Invoke-DryRun {
             if (!$bestKey -or [string]::CompareOrdinal($key, $bestKey) -lt 0) { $bestKey = $key; $best = $n }
         }
         if ($null -eq $best) {
-            if ($maxTickets -gt 0 -and $countedGroups.Count -ge $maxTickets) {
+            if ($maxTickets -gt 0 -and $processed -ge $maxTickets) {
                 Write-Host ''
                 Write-Host "Maximum ticket count ($maxTickets) reached."
                 return
             }
             break
         }
-        $group = if ($parentOf[$best]) { [long]$parentOf[$best] } else { $best }
-        if ($maxTickets -gt 0 -and !$countedGroups.ContainsKey($group) -and $countedGroups.Count -ge $maxTickets) {
+        if ($maxTickets -gt 0 -and $processed -ge $maxTickets) {
             Write-Host ''
             Write-Host "Maximum ticket count ($maxTickets) reached."
             return
         }
-        $processed++; $completed[$best] = $true; $countedGroups[$group] = $true
+        $processed++; $completed[$best] = $true
         $selection = Get-Selection $nodeOf[$best] -Preview
         Write-Host ($format -f $processed, "#$best", (@(Get-Difficulties $nodeOf[$best]) -join ','), (Get-PriorityLabel $nodeOf[$best]), $selection.Model, $selection.Effort, $selection.Source)
     }
@@ -464,7 +460,7 @@ $usageErrorPattern = 'usage limit|usage_limit_reached|usage cap|quota exceeded|i
 $serverErrorPattern = 'HTTP\s*(408|409|425|429|5[0-9][0-9])|status\s*(408|409|425|429|5[0-9][0-9])|server error|internal server error|service unavailable|bad gateway|gateway timeout|overloaded|temporarily unavailable|request timeout|timed out|ECONNRESET|ECONNREFUSED|ENETUNREACH|EAI_AGAIN|socket hang up|connection reset|connection closed|fetch failed|network error|server_error|stream.*(closed|terminated)'
 function Invoke-TicketLoop([string] $LoopName, [string[]] $ExtraLabels = @(), [switch] $Unlimited) {
     $loopLabels = @($labels) + $ExtraLabels
-    $finishedTickets = @{}; $countedGroups = @{}
+    $finishedTickets = @{}
     while ($true) {
         $ticket = Get-NextTicket $loopLabels
         if (!$ticket) {
@@ -476,12 +472,7 @@ function Invoke-TicketLoop([string] $LoopName, [string[]] $ExtraLabels = @(), [s
             break
         }
         $number = $ticket.number
-        $ticketParent = Get-ParentNumber $ticket
-        # Sub-issues continue their parent's in-flight work: they do not consume a
-        # new ticket slot, and the cap never stops the loop mid-parent. Only a
-        # selected ticket that starts a new parent/ticket group is blocked by the cap.
-        $group = if ($ticketParent) { [long]$ticketParent } else { [long]$number }
-        if (!$Unlimited -and $maxTickets -gt 0 -and $script:ticketsCompleted -ge $maxTickets -and !$countedGroups.ContainsKey($group)) {
+        if (!$Unlimited -and $maxTickets -gt 0 -and $script:ticketsCompleted -ge $maxTickets) {
             Write-Status "Maximum ticket count ($maxTickets) reached."
             break
         }
@@ -558,9 +549,8 @@ Determine why that attempt did not complete the original request, then resolve t
             }
             Stop-Script "$agent failed for a non-retryable implementation reason on #$number. The issue remains assigned and open. Inspect $logPath."
         }
-        # A parent and all of its sub-issues count as one ticket toward /max-tickets:
-        # only the first completion in a parent group consumes a slot.
-        if (!$countedGroups.ContainsKey($group)) { $countedGroups[$group] = $true; $script:ticketsCompleted++ }
+        # Count each successful issue completion, including each sub-issue, once.
+        $script:ticketsCompleted++
         $ended = [DateTimeOffset]::Now
         if ($agent -eq 'pi') { $usageSource = $ticketSessionDirectory; $usage = Get-SessionUsage pi @($ticketSessionDirectory) }
         else { $usageSource = "Claude Code sessions $($sessionIds -join ' ')"; $usage = Get-SessionUsage claude $sessionIds }

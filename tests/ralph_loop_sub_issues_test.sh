@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Sub-issues (issues declaring a parent via "## Parent") count with their parent
-# as one ticket toward --max-tickets, in the live loop and in --dry-run.
+# Each sub-issue (declaring a parent via "## Parent") counts as a separate
+# ticket toward --max-tickets, in the live loop and in --dry-run.
 set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tmp=$(mktemp -d)
@@ -66,8 +66,7 @@ EOF
 cp "$tmp/pi" "$tmp/claude"
 chmod +x "$tmp/gh" "$tmp/git" "$tmp/pi" "$tmp/claude"
 
-# The dry run mirrors the loop: sub-issues of one parent form a single cap unit,
-# and parent specification issues are ignored like the live loop.
+# The dry run counts each sub-issue separately and ignores parent specifications.
 output=$(PATH="$tmp:$PATH" "$root/ralph_loop.sh" --agent pi --repo owner/repo --dry-run)
 grep -Eq '^1 +#2 ' <<<"$output"
 grep -Eq '^2 +#3 ' <<<"$output"
@@ -79,36 +78,40 @@ if grep -Eq '^[0-9]+ +#1 ' <<<"$output"; then
 fi
 
 output=$(PATH="$tmp:$PATH" "$root/ralph_loop.sh" --agent pi --repo owner/repo --dry-run --max-tickets 1)
-[[ $(grep -Ec '^[0-9]+ +#[0-9]+ ' <<<"$output") -eq 2 ]]
+[[ $(grep -Ec '^[0-9]+ +#[0-9]+ ' <<<"$output") -eq 1 ]]
 grep -Eq '^1 +#2 ' <<<"$output"
-grep -Eq '^2 +#3 ' <<<"$output"
 grep -q 'Maximum ticket count (1) reached' <<<"$output"
-if grep -Eq '#4 |Not runnable' <<<"$output"; then
-    echo "cap 1 must stop before the standalone ticket and print no stranded report" >&2; exit 1
+if grep -Eq '#3 |#4 |Not runnable' <<<"$output"; then
+    echo "cap 1 must stop before the second sub-issue and print no stranded report" >&2; exit 1
 fi
 
 output=$(PATH="$tmp:$PATH" "$root/ralph_loop.sh" --agent pi --repo owner/repo --dry-run --max-tickets 2)
-[[ $(grep -Ec '^[0-9]+ +#[0-9]+ ' <<<"$output") -eq 3 ]]
+[[ $(grep -Ec '^[0-9]+ +#[0-9]+ ' <<<"$output") -eq 2 ]]
+grep -Eq '^2 +#3 ' <<<"$output"
+! grep -Eq '#4 ' <<<"$output"
 grep -q 'Maximum ticket count (2) reached' <<<"$output"
 ! grep -q 'Not runnable' <<<"$output"
 
-echo 'ok - dry run groups sub-issues under their parent and ignores parent specification issues'
+echo 'ok - dry run counts sub-issues separately and ignores parent specification issues'
 
 for backend in pi claude; do
-    # Cap 1: the whole parent chain (#2 unblockning #3) runs as one ticket; #4 waits.
+    # Cap 1: only #2 runs; the unblocked sibling #3 still needs its own slot.
     rm -f "$tmp"/closed-* "$tmp/claims" "$tmp/attempts"
     timeout 20 "$root/ralph_loop.sh" --agent "$backend" --repo owner/repo --max-tickets 1 >"$tmp/output" 2>&1 \
         || { cat "$tmp/output" >&2; exit 1; }
-    [[ $(<"$tmp/claims") == $'2\n3' ]]
-    [[ -f "$tmp/closed-2" && -f "$tmp/closed-3" && ! -f "$tmp/closed-4" ]]
+    [[ $(<"$tmp/claims") == '2' ]]
+    [[ $(<"$tmp/attempts") == '2' ]]
+    [[ -f "$tmp/closed-2" && ! -f "$tmp/closed-3" && ! -f "$tmp/closed-4" ]]
     ! grep -q '^1$' "$tmp/attempts"
     grep -q 'Maximum ticket count (1) reached' "$tmp/output"
 
-    # Cap 2: the standalone ticket fills the second slot.
+    # Cap 2: the sibling sub-issue fills the second slot; #4 waits.
     rm -f "$tmp"/closed-* "$tmp/claims" "$tmp/attempts"
     timeout 20 "$root/ralph_loop.sh" --agent "$backend" --repo owner/repo --max-tickets 2 >"$tmp/output" 2>&1 \
         || { cat "$tmp/output" >&2; exit 1; }
-    [[ $(<"$tmp/claims") == $'2\n3\n4' ]]
+    [[ $(<"$tmp/claims") == $'2\n3' ]]
+    [[ $(<"$tmp/attempts") == $'2\n3' ]]
+    [[ -f "$tmp/closed-3" && ! -f "$tmp/closed-4" ]]
     grep -q 'Maximum ticket count (2) reached' "$tmp/output"
 
     # Unlimited: everything runs and the loop ends by running out of tickets.
@@ -119,7 +122,7 @@ for backend in pi claude; do
     grep -q "No unblocked, unclaimed 'ready-for-agent' tickets are available" "$tmp/output"
     ! grep -q 'Maximum ticket count' "$tmp/output"
 
-    # --once stops after the first ticket even though the parent group is unfinished.
+    # --once stops after the first ticket even though more sub-issues remain.
     rm -f "$tmp"/closed-* "$tmp/claims" "$tmp/attempts"
     timeout 20 "$root/ralph_loop.sh" --agent "$backend" --repo owner/repo --once >"$tmp/output" 2>&1 \
         || { cat "$tmp/output" >&2; exit 1; }
@@ -127,4 +130,4 @@ for backend in pi claude; do
     [[ ! -f "$tmp/closed-3" ]]
 done
 
-echo 'ok - a parent and its sub-issues count as one ticket toward --max-tickets'
+echo 'ok - each sub-issue counts as a separate ticket toward --max-tickets'
