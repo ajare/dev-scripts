@@ -402,7 +402,44 @@ dry_run_selection() {
     fi
 }
 
+show_dry_run_post_loop() {
+    echo "Post-loop plan (preview only; no agents run or issues changed):"
+    if ((bug_hunt == 0)); then
+        echo "  Bug hunt: disabled. Bug-fix loop: disabled (requires a bug hunt)."
+        echo
+        return 0
+    fi
+    echo "  Bug hunt: $agent; model '$bug_hunt_model'; effort '$bug_hunt_effort'; publish findings to tracker."
+    if ((bug_hunt_implemented_only)); then
+        echo "    Scope: commits for tickets actually completed by the initial loop; skip hunt and fixes if none complete."
+    else
+        echo "    Scope: all commits (not limited to tickets completed by the initial loop)."
+    fi
+    [[ -z "$use_branch" ]] || echo "    Branch filter: current branch '$use_branch' only (combined with ticket scope, if enabled)."
+    ((${#label_specs[@]} == 0)) || echo "    Labels on filed bugs: ${label_specs[*]}."
+    if ((fix_bugs)); then
+        echo "  Bug-fix loop: after a successful hunt; $agent; filter '$ready_label' + 'bug' + all --labels filters."
+        if ((adaptive)); then
+            echo "    Model/effort: adaptive from each bug ticket's difficulty label:"
+            local difficulty mapping
+            for difficulty in trivial easy small low medium large high hard; do
+                mapping=$(adaptive_mapping "$difficulty")
+                echo "      $difficulty: ${mapping%%|*} / ${mapping##*|}"
+            done
+        else
+            echo "    Model/effort: fixed at '$model' / '$effort' (not the hunt model)."
+        fi
+        ((${#difficulty_override_specs[@]} == 0)) || echo "    Difficulty overrides apply: ${difficulty_override_specs[*]}."
+        echo "    Limit: ignores --max-tickets; future bug tickets cannot be listed before the hunt."
+        ((once == 0)) || echo "    --once: fixes at most one bug ticket."
+    else
+        echo "  Bug-fix loop: disabled; findings are filed but not automatically fixed."
+    fi
+    echo
+}
+
 run_dry_run() {
+    show_dry_run_post_loop
     local search_query="repo:${repo} is:issue is:open" l payload data total
     for l in "$ready_label" ${labels[@]+"${labels[@]}"}; do
         [[ -n "$l" ]] && search_query+=" label:\"${l//\"/}\""

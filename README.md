@@ -81,6 +81,13 @@ processing order without running them, counting each sub-issue separately
 and excluding parent specification issues like the live loop. Once the cap is
 reached, remaining tickets are not listed or reported as stranded.
 
+Dry-run also shows the post-loop plan: whether bug hunting/fixing is enabled,
+the hunt model and effort, commit/branch scope, and the bug-fix loop's fixed or
+adaptive model policy (including difficulty overrides). It explains that fixes
+ignore the ticket cap but still respect `--once` (`/once`). Future bugs cannot
+be listed before the hunt runs; a ticket-scoped hunt and its fixes are skipped
+if the initial loop completes no tickets. No agents run or issues change.
+
 ### Ticket-scoped bug hunts
 
 By default, `--bug-hunt MODEL:EFFORT` (`/bug-hunt`) hunts every commit — with

@@ -237,7 +237,42 @@ query($q: String!) {
   }
 }
 '@
+function Show-DryRunPostLoop {
+    Write-Host 'Post-loop plan (preview only; no agents run or issues changed):'
+    if (!$bugHunt) {
+        Write-Host '  Bug hunt: disabled. Bug-fix loop: disabled (requires a bug hunt).'
+        Write-Host ''
+        return
+    }
+    Write-Host "  Bug hunt: $agent; model '$bugHuntModel'; effort '$bugHuntEffort'; publish findings to tracker."
+    if ($bugHuntImplementedOnly) {
+        Write-Host '    Scope: commits for tickets actually completed by the initial loop; skip hunt and fixes if none complete.'
+    } else {
+        Write-Host '    Scope: all commits (not limited to tickets completed by the initial loop).'
+    }
+    if ($useBranch) { Write-Host "    Branch filter: current branch '$useBranch' only (combined with ticket scope, if enabled)." }
+    if ($options.ContainsKey('/labels')) { Write-Host "    Labels on filed bugs: $($options['/labels'] -join ' ')." }
+    if ($fixBugs) {
+        Write-Host "  Bug-fix loop: after a successful hunt; $agent; filter '$readyLabel' + 'bug' + all /labels filters."
+        if ($adaptive) {
+            Write-Host "    Model/effort: adaptive from each bug ticket's difficulty label:"
+            foreach ($difficulty in @('trivial', 'easy', 'small', 'low', 'medium', 'large', 'high', 'hard')) {
+                $mapping = Get-AdaptiveMapping $difficulty
+                Write-Host "      ${difficulty}: $($mapping.Model) / $($mapping.Effort)"
+            }
+        } else {
+            Write-Host "    Model/effort: fixed at '$model' / '$effort' (not the hunt model)."
+        }
+        if ($overrideSpecs.Count) { Write-Host "    Difficulty overrides apply: $($overrideSpecs -join ' ')." }
+        Write-Host '    Limit: ignores /max-tickets; future bug tickets cannot be listed before the hunt.'
+        if ($once) { Write-Host '    /once: fixes at most one bug ticket.' }
+    } else {
+        Write-Host '  Bug-fix loop: disabled; findings are filed but not automatically fixed.'
+    }
+    Write-Host ''
+}
 function Invoke-DryRun {
+    Show-DryRunPostLoop
     $searchQuery = "repo:$repo is:issue is:open"
     foreach ($label in @($readyLabel) + $labels) {
         if ($label) { $searchQuery += ' label:"' + $label.Replace('"', '') + '"' }

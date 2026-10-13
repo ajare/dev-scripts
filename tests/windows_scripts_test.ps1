@@ -240,6 +240,28 @@ public class Stub {
     }
     Assert (@(Get-Calls | Where-Object { $_.name -in @('pi', 'claude') -or ($_.args -contains 'edit') -or ($_.args -contains 'checkout') }).Count -eq 0) 'capped dry run never mutates or runs agents'
 
+    foreach ($backend in @('pi', 'claude')) {
+        $r = Run-Script ralph_loop @('/agent', $backend, '/repo', 'owner/repo', '/dry-run', '/max-tickets', '1', '/bug-hunt', 'hunt/model:high', '/fix-bugs', '/model', 'fix/model', '/effort', 'medium', '/difficulty-override', 'easy=override/model:high', '/use-branch', 'feature/test', '/labels', 'feature:test', '/once')
+        Assert ($r.Code -eq 0) "$backend post-loop preview"
+        Assert ($r.Text -match "Bug hunt: $backend; model 'hunt/model'; effort 'high'") 'hunt model and effort'
+        Assert ($r.Text -match 'Scope: all commits' -and $r.Text -match "Branch filter: current branch 'feature/test' only") 'hunt scope and branch filter'
+        Assert ($r.Text -match 'Labels on filed bugs: feature:test') 'filed bug labels'
+        Assert ($r.Text -match "fixed at 'fix/model' / 'medium' \(not the hunt model\)") 'fix loop uses ticket model'
+        Assert ($r.Text -match 'Difficulty overrides apply: easy=override/model:high') 'fix overrides'
+        Assert ($r.Text -match 'ignores /max-tickets' -and $r.Text -match '/once: fixes at most one bug ticket') 'fix limits'
+        $r = Run-Script ralph_loop @('/agent', $backend, '/repo', 'owner/repo', '/dry-run', '/bug-hunt-implemented-only', 'hunt/model:high', '/fix-bugs', '/adaptive-model-and-effort', '/difficulty-override', 'hard=custom/model:xhigh')
+        Assert ($r.Code -eq 0 -and $r.Text -match 'tickets actually completed by the initial loop' -and $r.Text -match 'skip hunt and fixes if none complete') 'implemented scope and skip condition'
+        Assert ($r.Text -match "adaptive from each bug ticket's difficulty label" -and $r.Text -match 'hard: custom/model / xhigh') 'adaptive fix models'
+        $r = Run-Script ralph_loop @('/agent', $backend, '/repo', 'owner/repo', '/dry-run', '/bug-hunt', 'hunt/model:high')
+        Assert ($r.Code -eq 0 -and $r.Text -match 'findings are filed but not automatically fixed') 'hunt without fixing'
+    }
+    Assert (@(Get-Calls | Where-Object { $_.name -in @('pi', 'claude') -or ($_.args -contains 'edit') -or ($_.args -contains 'checkout') }).Count -eq 0) 'post-loop preview does not mutate or run agents'
+    Set-Fixture @{ nodes = @() }
+    $r = Run-Script ralph_loop @('/agent', 'pi', '/repo', 'owner/repo', '/dry-run', '/bug-hunt-implemented-only', 'hunt/model:high', '/fix-bugs')
+    Assert ($r.Code -eq 0 -and $r.Text -match 'No open tickets match' -and $r.Text -match 'skip hunt and fixes if none complete') 'empty preview retains post-loop plan'
+    $r = Run-Script ralph_loop @('/agent', 'pi', '/repo', 'owner/repo', '/dry-run', '/fix-bugs')
+    Assert ($r.Code -eq 0 -and $r.Text -match 'Bug hunt: disabled. Bug-fix loop: disabled') 'fixing without hunting is disabled'
+
     # Sub-issues count separately; parent specification issues are ignored.
     $spec = New-Issue 1
     $subOne = New-Issue 2 @('ready-for-agent') @() "## Parent`n#1"
