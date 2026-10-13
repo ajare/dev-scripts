@@ -6,10 +6,17 @@
 #     tools/ralph_loop.sh --agent pi --labels feature:platform-lifts \
 #       --use-branch feature/platform-lifts
 #
-#   Run the same feature loop, then hunt for bugs:
+#   Run the same feature loop, then hunt for bugs in every commit
+#   (with --use-branch, only the branch-unique commits):
 #     tools/ralph_loop.sh --agent pi --labels feature:platform-lifts \
 #       --use-branch feature/platform-lifts \
 #       --bug-hunt openai-codex/gpt-6.1-sol:high
+#
+#   Run the feature loop and hunt only the commits that implemented
+#   its tickets:
+#     tools/ralph_loop.sh --agent pi --labels feature:platform-lifts \
+#       --use-branch feature/platform-lifts \
+#       --bug-hunt-implemented-only openai-codex/gpt-6.1-sol:high
 #
 #   Run the feature loop, hunt for bugs, then fix matching bug tickets:
 #     tools/ralph_loop.sh --agent pi --labels feature:platform-lifts \
@@ -45,7 +52,9 @@ Options:
                                     Also applied to tickets created by --bug-hunt
   --use-branch BRANCH               Check out/create this branch
   --bug-hunt MODEL:EFFORT           Run tools/bug_hunt.sh after the main loop
-                                    with the specified model and effort
+                                    with the specified model and effort,
+                                    hunting every commit (with --use-branch,
+                                    only the branch-unique commits)
   --bug-hunt-implemented-only M:E   Run the bug hunt scoped to the commits and
                                     tickets implemented by the initial ticket
                                     loop; implies the hunt and is mutually

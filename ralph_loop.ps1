@@ -17,7 +17,9 @@ Options:
   /labels LABEL[,LABEL...]          Additional required labels; may be repeated.
                                      Also applied to tickets created by /bug-hunt
   /use-branch BRANCH                Check out/create this branch
-  /bug-hunt MODEL:EFFORT            Run bug_hunt.ps1 after the main loop
+  /bug-hunt MODEL:EFFORT            Run bug_hunt.ps1 after the main loop over
+                                     every commit (with /use-branch, only the
+                                     branch-unique commits)
   /bug-hunt-implemented-only M:E    Run the bug hunt scoped to the commits and
                                      tickets implemented by the initial loop;
                                      implies the hunt and is mutually
@@ -39,6 +41,28 @@ Options:
   /quiet                            Suppress routine and agent output
   /verbose                          Enable loop and agent diagnostics
   /help
+
+Examples:
+  Run tickets for a feature label on its matching branch:
+    .\ralph_loop.ps1 /agent pi /labels feature:platform-lifts `
+        /use-branch feature/platform-lifts
+
+  Run the same feature loop, then hunt for bugs in every commit
+  (with /use-branch, only the branch-unique commits):
+    .\ralph_loop.ps1 /agent pi /labels feature:platform-lifts `
+        /use-branch feature/platform-lifts `
+        /bug-hunt 'openai-codex/gpt-6.1-sol:high'
+
+  Run the feature loop and hunt only the commits that implemented
+  its tickets:
+    .\ralph_loop.ps1 /agent pi /labels feature:platform-lifts `
+        /use-branch feature/platform-lifts `
+        /bug-hunt-implemented-only 'openai-codex/gpt-6.1-sol:high'
+
+  Run the feature loop, hunt for bugs, then fix matching bug tickets:
+    .\ralph_loop.ps1 /agent pi /labels feature:platform-lifts `
+        /use-branch feature/platform-lifts `
+        /bug-hunt 'openai-codex/gpt-6.1-sol:high' /fix-bugs
 '@
 }
 $options = Read-Options $args @('/agent', '/model', '/effort', '/repo', '/ready-label', '/labels', '/use-branch', '/bug-hunt', '/bug-hunt-implemented-only', '/difficulty-override', '/initial-retry-interval-seconds', '/max-retry-interval-seconds', '/usage-poll-seconds', '/max-tickets') @('/adaptive-model-and-effort', '/fix-bugs', '/once', '/dry-run', '/quiet', '/verbose') ${function:Show-Usage}

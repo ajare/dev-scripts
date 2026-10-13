@@ -83,7 +83,9 @@ reached, remaining tickets are not listed or reported as stranded.
 
 ### Ticket-scoped bug hunts
 
-With `--bug-hunt-implemented-only MODEL:EFFORT`
+By default, `--bug-hunt MODEL:EFFORT` (`/bug-hunt`) hunts every commit — with
+`--use-branch` (`/use-branch`), only the commits unique to the branch. With
+`--bug-hunt-implemented-only MODEL:EFFORT`
 (`/bug-hunt-implemented-only MODEL:EFFORT`), the post-loop bug hunt is confined
 to the tickets the initial loop implemented and the commits that implemented
 them. The option enables the hunt by itself and is mutually exclusive with
