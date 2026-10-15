@@ -34,6 +34,8 @@
 #       --effort high
 set -uo pipefail
 
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd) || exit 1
+
 usage() {
     cat <<'EOF'
 Usage: ralph_loop.sh --agent {pi|claude} [options]
@@ -51,7 +53,7 @@ Options:
   --labels LABEL[,LABEL...]         Additional required labels; may be repeated.
                                     Also applied to tickets created by --bug-hunt
   --use-branch BRANCH               Check out/create this branch
-  --bug-hunt MODEL:EFFORT           Run tools/bug_hunt.sh after the main loop
+  --bug-hunt MODEL:EFFORT           Run sibling bug_hunt.sh after the main loop
                                     with the specified model and effort,
                                     hunting every commit (with --use-branch,
                                     only the branch-unique commits)
@@ -843,7 +845,7 @@ if ((bug_hunt)); then
             bug_hunt_args+=(--labels "$label_spec")
         done
         status "Starting post-loop bug hunt with $bug_hunt_model at $bug_hunt_effort effort."
-        "$repo_root/tools/bug_hunt.sh" "${bug_hunt_args[@]}"
+        "$script_dir/bug_hunt.sh" "${bug_hunt_args[@]}"
         bug_hunt_result=$?
         if ((bug_hunt_result != 0)); then
             ((fix_bugs)) && die "Bug hunt failed; bug-fix loop will not start."

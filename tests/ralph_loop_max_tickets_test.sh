@@ -5,7 +5,10 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 export DEV_SCRIPTS_TEST_DIR="$tmp" TMPDIR="$tmp" PATH="$tmp:$PATH"
-mkdir -p "$tmp/tools"
+# Keep the scripts outside the target repo, including a space in their path.
+script_dir="$tmp/dev scripts"
+mkdir -p "$script_dir"
+cp "$root/ralph_loop.sh" "$script_dir/ralph_loop.sh"
 cat >"$tmp/gh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -45,12 +48,13 @@ else
 fi
 EOF
 cp "$tmp/pi" "$tmp/claude"
-cat >"$tmp/tools/bug_hunt.sh" <<'EOF'
+cat >"$script_dir/bug_hunt.sh" <<'EOF'
 #!/usr/bin/env bash
 touch "$DEV_SCRIPTS_TEST_DIR/hunted"
 printf '%s\n' "$*" >"$DEV_SCRIPTS_TEST_DIR/hunt-args"
 EOF
-chmod +x "$tmp/gh" "$tmp/git" "$tmp/pi" "$tmp/claude" "$tmp/tools/bug_hunt.sh"
+chmod +x "$tmp/gh" "$tmp/git" "$tmp/pi" "$tmp/claude" "$script_dir/bug_hunt.sh"
+root="$script_dir"
 
 for backend in pi claude; do
     for cap in unlimited 1 2 2-hunt 4; do
