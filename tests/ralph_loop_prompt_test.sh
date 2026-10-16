@@ -18,7 +18,8 @@ case "$*" in
     'issue view '*'--json state --jq .state')
         if [[ "${TEST_MODE:-}" == stale ]] || ((count >= 2)); then echo CLOSED; else echo OPEN; fi ;;
     'issue view '*) echo '{"number":10,"title":"Ticket 10","url":"https://example.test/10","body":"","comments":[]}' ;;
-    'issue edit '*) ;;
+    'label create '*) printf '%s\n' "$*" >"$DEV_SCRIPTS_TEST_DIR/label" ;;
+    'issue edit '*) printf '%s\n' "$*" >"$DEV_SCRIPTS_TEST_DIR/claim" ;;
     *) echo "unexpected gh: $*" >&2; exit 99 ;;
 esac
 EOF
@@ -85,11 +86,13 @@ for backend in pi claude; do
     for result in recovery provider; do
         rm -f "$tmp/count" "$tmp"/prompt-*.txt
         FIRST_RESULT=$result "$script_dir/ralph_loop.sh" --agent "$backend" \
-            --repo owner/repo --once --quiet --initial-retry-interval-seconds 1 >"$tmp/output" 2>&1 || {
+            --repo owner/repo --once --quiet --difficulty-override medium=halogen/qwen-3.8-flash-next:high --initial-retry-interval-seconds 1 >"$tmp/output" 2>&1 || {
                 cat "$tmp/output" >&2
                 exit 1
             }
         [[ $(<"$tmp/count") == 2 ]]
+        assert_contains "$tmp/label" 'label create assignee:halogen/qwen-3.8-flash-next --repo owner/repo --force'
+        assert_contains "$tmp/claim" '--add-label assignee:halogen/qwen-3.8-flash-next --add-assignee @me'
         assert_policy "$tmp/prompt-1.txt"
         assert_policy "$tmp/prompt-2.txt"
         if [[ "$result" == provider ]]; then

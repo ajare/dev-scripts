@@ -521,10 +521,12 @@ function Invoke-TicketLoop([string] $LoopName, [string[]] $ExtraLabels = @(), [s
         Write-Status "Selected #${number}: $($ticket.title)"
         $selection = Get-Selection $ticket
         Write-Host "Ticket #$number model: $($selection.Model); effort: $($selection.Effort) ($($selection.Source))."
-        if (!@(Get-Assignees $ticket).Count) {
-            $null = Invoke-Checked gh @('issue', 'edit', "$number", '--repo', $repo, '--add-assignee', '@me')
-            Write-Status "Claimed #$number as $currentUser."
-        }
+        $assigneeLabel = "assignee:$($selection.Model)"
+        $null = Invoke-Checked gh @('label', 'create', $assigneeLabel, '--repo', $repo, '--force')
+        $claimArgs = @('issue', 'edit', "$number", '--repo', $repo, '--add-label', $assigneeLabel)
+        if (!@(Get-Assignees $ticket).Count) { $claimArgs += @('--add-assignee', '@me') }
+        $null = Invoke-Checked gh $claimArgs
+        Write-Status "Claimed #$number as $currentUser ($assigneeLabel)."
         $started = [DateTimeOffset]::Now
         $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
         $ticketSessionDirectory = Join-Path $logDirectory "issue-$number-$timestamp-sessions"

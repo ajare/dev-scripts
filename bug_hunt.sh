@@ -165,6 +165,8 @@ EOF
 )
 fi
 
+publish_prompt+=$'\n\n'"Apply the label \"assignee:$model\" to every published ticket (in YAML front matter for docs). For tracker publication, create this label with gh label create --force if it does not exist before applying it. Verify it is present on every published ticket."
+
 if ((${#labels[@]})); then
     publish_prompt+=$'\n\nApply each of these additional labels to every published ticket (without duplicating labels):'
     for label in "${labels[@]}"; do

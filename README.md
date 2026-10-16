@@ -8,6 +8,12 @@ The three root-level Bash scripts also have native Windows PowerShell versions:
 | `pre_ralph_validate.sh` | `pre_ralph_validate.ps1` |
 | `ralph_loop.sh` | `ralph_loop.ps1` |
 
+`ralph_loop` adds `assignee:<MODEL>` when claiming or resuming a ticket, using
+that ticket's selected model (including adaptive selection and difficulty overrides).
+`bug_hunt` includes its hunt model's label on every published issue or Markdown
+ticket. Missing GitHub model labels are created automatically. For example:
+`assignee:halogen/qwen-3.8-flash-next`.
+
 ## Windows
 
 Requires Windows PowerShell 5.1 or PowerShell 7 on Windows. Keep

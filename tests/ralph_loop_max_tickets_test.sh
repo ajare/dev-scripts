@@ -23,6 +23,7 @@ case "$*" in
     'issue view '*'--json state --jq .state')
         if [[ -f "$DEV_SCRIPTS_TEST_DIR/closed-$3" ]]; then echo CLOSED; else echo OPEN; fi ;;
     'issue view '*) printf '{"number":%s,"title":"Ticket","body":"","comments":[]}' "$3" ;;
+    'label create '*) ;;
     'issue edit '*) echo "$3" >>"$DEV_SCRIPTS_TEST_DIR/claims" ;;
     *) echo "unexpected gh: $*" >&2; exit 99 ;;
 esac

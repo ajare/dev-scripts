@@ -749,10 +749,14 @@ while true; do
     select_ticket_model_and_effort "$ticket"
     echo "Ticket #$number model: $ticket_model; effort: $ticket_effort ($selection_source)."
 
+    assignee_label="assignee:$ticket_model"
+    gh label create "$assignee_label" --repo "$repo" --force >/dev/null || exit 1
+    claim_args=(issue edit "$number" --repo "$repo" --add-label "$assignee_label")
     if [[ $(jq '.assignees|length' <<<"$ticket") -eq 0 ]]; then
-        gh issue edit "$number" --repo "$repo" --add-assignee @me >/dev/null || exit 1
-        status "Claimed #$number as $current_user."
+        claim_args+=(--add-assignee @me)
     fi
+    gh "${claim_args[@]}" >/dev/null || exit 1
+    status "Claimed #$number as $current_user ($assignee_label)."
     ticket_started=$(date +%s); timestamp=$(date +%Y%m%d-%H%M%S)
     ticket_session_directory="$log_directory/issue-$number-$timestamp-sessions"; session_ids=()
     [[ "$agent" == pi ]] && mkdir -p "$ticket_session_directory"

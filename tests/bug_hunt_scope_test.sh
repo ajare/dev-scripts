@@ -54,6 +54,8 @@ assert_contains "$tmp/hunt-prompt" 'found by searching HEAD for commit messages 
 assert_contains "$tmp/hunt-prompt" '- #7: abc1234 Implement the thing (#7)'
 assert_contains "$tmp/hunt-prompt" '- #9: def5678 Follow-up work (#9)'
 assert_contains "$tmp/hunt-prompt" 'Start with `git show` on these commits'
+assert_contains "$tmp/hunt-prompt" 'Apply the label "assignee:test/model" to every published ticket (in YAML front matter for docs).'
+assert_contains "$tmp/hunt-prompt" 'create this label with gh label create --force if it does not exist'
 if grep -Fq 'Review the entire codebase.' "$tmp/hunt-prompt"; then
     echo 'scoped hunt fell back to the whole-codebase prompt' >&2
     exit 1

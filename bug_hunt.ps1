@@ -116,6 +116,7 @@ Publish every ticket to this repository's GitHub issue tracker with `gh`; do not
 Publish every ticket as a separate Markdown file under `docs/tickets/bug-hunt/`; do not create GitHub issues. Create the directory if needed, inspect existing tickets to avoid duplicates, and use stable, descriptive kebab-case filenames. Begin each file with YAML front matter containing `labels` with `bug`, exactly one `difficulty:*`, exactly one `priority:*`, and `ready-for-agent`. Include a `blockedBy` list containing the relative filenames of prerequisite tickets (or an empty list) so all dependencies are explicit and machine-readable. Do not modify files outside `docs/tickets/bug-hunt/`.
 '@
     }
+    $publishPrompt += "`n`nApply the label `"assignee:$model`" to every published ticket (in YAML front matter for docs). For tracker publication, create this label with gh label create --force if it does not exist before applying it. Verify it is present on every published ticket."
     $labels = @(Get-Labels $options)
     if ($labels.Count) {
         $publishPrompt += "`n`nApply each of these additional labels to every published ticket (without duplicating labels):"

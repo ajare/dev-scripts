@@ -118,7 +118,7 @@ public class Stub {
                 Console.WriteLine(count >= completeAfter ? "CLOSED" : "OPEN");
             }
             else if (command.StartsWith("issue view ")) Print(Field("ticket", null));
-            else if (command.StartsWith("issue edit ")) { }
+            else if (command.StartsWith("issue edit ") || command.StartsWith("label create ")) { }
             else { Console.Error.WriteLine("unexpected gh: " + command); return 99; }
             return Convert.ToInt32(Field("ghCode", 0));
         }
@@ -315,6 +315,7 @@ public class Stub {
     $scope = [regex]::Match($shell, '(?ms)^    scope_prompt=\$\(cat <<EOF\n(.*?)\nEOF\n\)').Groups[1].Value
     $scope = $scope.Replace('$current_branch', 'feature/test').Replace('$default_ref', 'origin/main').Replace('$merge_base', 'base-commit').Replace('$commit_range', 'origin/main..HEAD').Replace('$unique_count', '3')
     $publish = [regex]::Matches($shell, '(?ms)^    publish_prompt=\$\(cat <<''EOF''\n(.*?)\nEOF\n\)')[1].Groups[1].Value
+    $publish += "`n`nApply the label `"assignee:test/model`" to every published ticket (in YAML front matter for docs). For tracker publication, create this label with gh label create --force if it does not exist before applying it. Verify it is present on every published ticket."
     $publish += "`n`nApply each of these additional labels to every published ticket (without duplicating labels):`n- one`n- two`n- space & unicode label"
     $expectedPrompt = $template.Replace('$scope_prompt', $scope).Replace('$publish_prompt', $publish).Replace('\`', '`')
     Assert ($prompt.Replace("`r`n", "`n") -ceq $expectedPrompt) 'complete bug-hunt prompt matches Bash verbatim'
@@ -327,6 +328,7 @@ public class Stub {
     Assert ($r.Code -eq 7) "bug hunt propagates agent failure: $($r.Code) $($r.ErrorText) $($r.Text)"
     $prompt = Get-Content -LiteralPath (Join-Path $temp 'prompt.txt') -Raw
     Assert ($prompt -match 'GitHub issue tracker' -and $prompt -match 'Review the entire codebase') 'tracker/full codebase prompt'
+    Assert ($prompt.Contains('Apply the label "assignee:opus"')) 'tracker model label'
 
     Set-Fixture @{ issues = @($ten); ticket = $ten; completeAfter = 2; agentCodes = @(0, 0) }
     $r = Run-Script ralph_loop @('/agent', 'pi', '/once', '/quiet')

@@ -44,6 +44,7 @@ JSON
 #1'
         jq -nc --argjson n "$3" --arg body "$body" \
             '{number:$n,title:("Ticket "+($n|tostring)),body:$body,comments:[],url:("https://example.test/"+($n|tostring))}' ;;
+    'label create '*) ;;
     'issue edit '*) echo "$3" >>"$DEV_SCRIPTS_TEST_DIR/claims" ;;
     *) echo "unexpected gh: $*" >&2; exit 99 ;;
 esac
